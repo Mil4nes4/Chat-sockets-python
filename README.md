@@ -32,7 +32,6 @@ chat_sockets/
 │   ├── cliente_chat.py           # Lógica de red compartida
 │   ├── consola.py                # Cliente de terminal
 │   └── gui.py                    # Cliente gráfico con tkinter
-├── informe/                      # Informe del laboratorio
 ├── historial_chat.txt            # Generado automáticamente por el servidor
 └── README.md                     # Este archivo
 ```
@@ -188,14 +187,3 @@ Para probar el chat entre computadoras distintas:
 3. Máquina C ejecuta `consola.py` y se conecta a la IP de A.
 4. Los tres usuarios pueden chatear, enviarse mensajes privados y compartir archivos.
 
----
-
-## 10. Autores
-
-- [Integrante 1]
-- [Integrante 2]
-- [Delegado del grupo]
-
-Curso: Sistemas Operativos  
-Profesor: Pariona  
-Fecha de entrega: 04 de julio

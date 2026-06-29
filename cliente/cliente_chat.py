@@ -7,14 +7,12 @@ CARPETA_DESCARGAS = 'descargas'
 
 
 def conectar(ip, puerto):
-    """Crea un socket TCP y se conecta al servidor."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ip, puerto))
     return sock
 
 
 def enviar(socket_cliente, mensaje):
-    """Envía un diccionario serializado en JSON precedido por su longitud (4 bytes)."""
     data = json.dumps(mensaje).encode('utf-8')
     longitud = len(data)
     socket_cliente.sendall(longitud.to_bytes(4, byteorder='big'))
@@ -22,7 +20,6 @@ def enviar(socket_cliente, mensaje):
 
 
 def recibir(socket_cliente):
-    """Recibe un mensaje JSON completo. Retorna None si el servidor cerró la conexión."""
     longitud_bytes = socket_cliente.recv(4)
     if not longitud_bytes:
         return None
@@ -57,7 +54,6 @@ def solicitar_lista(socket_cliente):
 
 
 def enviar_archivo(socket_cliente, ruta, destinatario='todos'):
-    """Lee un archivo, lo codifica en base64 y lo envía al servidor."""
     nombre = os.path.basename(ruta)
     with open(ruta, 'rb') as f:
         contenido = base64.b64encode(f.read()).decode('utf-8')
@@ -70,7 +66,6 @@ def enviar_archivo(socket_cliente, ruta, destinatario='todos'):
 
 
 def guardar_archivo(emisor, nombre_archivo, datos_base64):
-    """Guarda un archivo recibido en la carpeta de descargas."""
     os.makedirs(CARPETA_DESCARGAS, exist_ok=True)
     ruta = os.path.join(CARPETA_DESCARGAS, f'{emisor}_{nombre_archivo}')
     with open(ruta, 'wb') as f:
@@ -79,7 +74,6 @@ def guardar_archivo(emisor, nombre_archivo, datos_base64):
 
 
 def cerrar(socket_cliente):
-    """Envía una señal de salida y cierra el socket."""
     try:
         enviar(socket_cliente, {'tipo': 'exit'})
     except Exception:

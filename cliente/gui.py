@@ -13,7 +13,6 @@ from cliente.cliente_chat import (
     enviar_mensaje_privado, solicitar_lista, enviar_archivo, guardar_archivo, cerrar
 )
 
-# Colores estilo Discord
 COLOR_FONDO = '#36393f'
 COLOR_PANEL = '#2f3136'
 COLOR_ENTRADA = '#40444b'

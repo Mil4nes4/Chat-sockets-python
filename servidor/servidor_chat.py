@@ -16,7 +16,6 @@ lock = threading.Lock()
 
 
 def obtener_ip_local():
-    """Obtiene la dirección IP local de la máquina."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(('8.8.8.8', 80))
@@ -29,7 +28,6 @@ def obtener_ip_local():
 
 
 def enviar(socket_cliente, mensaje):
-    """Envía un mensaje JSON precedido por su longitud en 4 bytes."""
     try:
         data = json.dumps(mensaje).encode('utf-8')
         longitud = len(data)
@@ -40,7 +38,6 @@ def enviar(socket_cliente, mensaje):
 
 
 def recibir(socket_cliente):
-    """Recibe un mensaje JSON completo. Retorna None si hubo desconexión."""
     longitud_bytes = socket_cliente.recv(4)
     if not longitud_bytes:
         return None
@@ -55,7 +52,6 @@ def recibir(socket_cliente):
 
 
 def broadcast(mensaje, excluir=None):
-    """Envía un mensaje a todos los clientes conectados, excepto al indicado."""
     with lock:
         copia = list(clientes.items())
     for nick, sock in copia:
@@ -65,7 +61,6 @@ def broadcast(mensaje, excluir=None):
 
 
 def enviar_privado(destinatario, mensaje):
-    """Envía un mensaje a un único cliente."""
     with lock:
         sock = clientes.get(destinatario)
     if sock:
@@ -73,20 +68,17 @@ def enviar_privado(destinatario, mensaje):
 
 
 def enviar_lista_usuarios():
-    """Envía la lista actualizada de usuarios a todos los clientes."""
     with lock:
         usuarios = list(clientes.keys())
     broadcast({'tipo': 'usuarios', 'contenido': usuarios})
 
 
 def guardar_historial(linea):
-    """Agrega una línea al archivo de historial."""
     with open(ARCHIVO_HISTORIAL, 'a', encoding='utf-8') as f:
         f.write(linea + '\n')
 
 
 def enviar_historial(socket_cliente):
-    """Envía el historial de mensajes públicos a un cliente recién conectado."""
     if os.path.exists(ARCHIVO_HISTORIAL):
         with open(ARCHIVO_HISTORIAL, 'r', encoding='utf-8') as f:
             for linea in f:
@@ -96,7 +88,6 @@ def enviar_historial(socket_cliente):
 
 
 def manejar_archivo(emisor, destinatario, nombre_archivo, datos_base64):
-    """Almacena una copia del archivo en el servidor y lo reenvía."""
     os.makedirs(CARPETA_ARCHIVOS, exist_ok=True)
     ruta = os.path.join(CARPETA_ARCHIVOS, f'{emisor}_{nombre_archivo}')
     try:
@@ -119,7 +110,6 @@ def manejar_archivo(emisor, destinatario, nombre_archivo, datos_base64):
         broadcast(mensaje)
     else:
         enviar_privado(destinatario, mensaje)
-        # Confirmación también para el emisor
         with lock:
             sock = clientes.get(emisor)
         if sock:
@@ -131,7 +121,6 @@ def obtener_hora():
 
 
 def manejar_cliente(socket_cliente, direccion):
-    """Atiende a un cliente durante toda su sesión."""
     nickname = None
     try:
         # Primer mensaje: nickname
