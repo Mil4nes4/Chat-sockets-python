@@ -30,8 +30,8 @@ TEMA_OSCURO = {
     'texto_secundario': '#c2c5cb',
     'acento': '#5865f2',
     'acento_hover': '#4752c4',
-    'propio': '#9aa3ff',
-    'propio_fondo': '#404eed',
+    'propio': '#c7d2ff',
+    'propio_fondo': '#393d5c',
     'otros_fondo': '#40444b',
     'privado': '#ffb454',
     'privado_fondo': '#4f442b',
@@ -39,9 +39,20 @@ TEMA_OSCURO = {
     'server_fondo': '#2f4f3f',
     'historial': '#9a9fa6',
     'archivo': '#ff6b6e',
+    'archivo_fondo': '#4a2c2e',
     'online': '#3ddc84',
     'busqueda': '#fee75c'
 }
+
+PALETA_USUARIOS = [
+    '#f783ac', '#74c0fc', '#ffd43b', '#69db7c',
+    '#da77f2', '#4dabf7', '#ff922b', '#63e6be'
+]
+
+
+def color_usuario(nickname):
+    indice = sum(ord(c) for c in nickname) % len(PALETA_USUARIOS)
+    return PALETA_USUARIOS[indice]
 
 MASCOTA_ASCII = (
     "  █     █  \n"
@@ -97,6 +108,33 @@ def crear_icono_mascota(tema, escala=3):
             if caracter == 'X':
                 img.put(tema['server'], to=(x, y, x + 1, y + 1))
     return img.zoom(escala, escala)
+
+
+def crear_boton_redondeado(parent, texto, comando, bg, fg, fondo_padre,
+                            bg_hover=None, ancho=140, alto=42, radio=12,
+                            font=('Segoe UI', 11, 'bold')):
+    bg_hover = bg_hover or bg
+    canvas = tk.Canvas(
+        parent, width=ancho, height=alto, bg=fondo_padre,
+        highlightthickness=0, cursor='hand2'
+    )
+
+    def _dibujar(color):
+        canvas.delete('all')
+        r = radio
+        canvas.create_oval(0, 0, 2 * r, 2 * r, fill=color, outline=color)
+        canvas.create_oval(ancho - 2 * r, 0, ancho, 2 * r, fill=color, outline=color)
+        canvas.create_oval(0, alto - 2 * r, 2 * r, alto, fill=color, outline=color)
+        canvas.create_oval(ancho - 2 * r, alto - 2 * r, ancho, alto, fill=color, outline=color)
+        canvas.create_rectangle(r, 0, ancho - r, alto, fill=color, outline=color)
+        canvas.create_rectangle(0, r, ancho, alto - r, fill=color, outline=color)
+        canvas.create_text(ancho / 2, alto / 2, text=texto, fill=fg, font=font)
+
+    _dibujar(bg)
+    canvas.bind('<Button-1>', lambda e: comando())
+    canvas.bind('<Enter>', lambda e: _dibujar(bg_hover))
+    canvas.bind('<Leave>', lambda e: _dibujar(bg))
+    return canvas
 
 
 def configurar_estilo_ttk(tema):
@@ -175,20 +213,25 @@ class LoginFrame(tk.Frame):
 
         self.entries['entry_nick'].focus()
 
-        self.boton_conectar = tk.Button(
-            frame_central, text='Conectar al chat',
-            bg=self.tema['acento'], fg='white',
-            activebackground=self.tema['acento_hover'],
-            font=('Segoe UI', 12, 'bold'), relief=tk.FLAT,
-            command=self._intentar_conectar, cursor='hand2'
+        self.boton_conectar = crear_boton_redondeado(
+            frame_central, 'Conectar al chat', self._intentar_conectar,
+            bg=self.tema['acento'], fg='white', fondo_padre=self.tema['panel'],
+            bg_hover=self.tema['acento_hover'], ancho=300, alto=48,
+            font=('Segoe UI', 12, 'bold')
         )
-        self.boton_conectar.pack(fill=tk.X, pady=(24, 0), ipady=12)
+        self.boton_conectar.pack(pady=(24, 0))
 
         self.label_error = tk.Label(
             frame_central, text='', fg='#ed4245',
             bg=self.tema['panel'], font=('Segoe UI', 10)
         )
         self.label_error.pack(pady=(10, 0))
+
+        tk.Label(
+            frame_central, text='Sockets TCP · Sistemas Operativos',
+            bg=self.tema['panel'], fg=self.tema['texto_secundario'],
+            font=('Segoe UI', 9)
+        ).pack(pady=(18, 0))
 
         self.entries['entry_puerto'].bind('<Return>', lambda e: self._intentar_conectar())
         self.entries['entry_nick'].bind('<Return>', lambda e: self._intentar_conectar())
@@ -229,6 +272,9 @@ class ChatFrame(tk.Frame):
         self.hilo_escucha = None
         self.ultimo_typing = 0
         self.imagenes = []  # Referencias para evitar que se borren
+        self.tags_usuario = set()
+        self._marca_agua_presente = False
+        self._historial_mostrado = False
 
         self._construir()
         self._procesar_cola()
@@ -246,21 +292,19 @@ class ChatFrame(tk.Frame):
         )
         self.label_titulo.pack(side=tk.LEFT, padx=15, pady=10)
 
-        self.boton_buscar = tk.Button(
-            frame_superior, text='🔍 Buscar', bg=self.tema['entrada'],
-            fg=self.tema['texto'], relief=tk.FLAT, cursor='hand2',
-            font=('Segoe UI', 11), padx=16, pady=8,
-            command=self._mostrar_busqueda
+        self.boton_buscar = crear_boton_redondeado(
+            frame_superior, '🔍 Buscar', self._mostrar_busqueda,
+            bg=self.tema['entrada'], fg=self.tema['texto'], fondo_padre=self.tema['panel'],
+            bg_hover=self.tema['borde'], ancho=120, alto=36, font=('Segoe UI', 11)
         )
-        self.boton_buscar.pack(side=tk.RIGHT, padx=5)
+        self.boton_buscar.pack(side=tk.RIGHT, padx=5, pady=6)
 
-        self.boton_desconectar = tk.Button(
-            frame_superior, text='Desconectar', bg='#ed4245',
-            fg='white', relief=tk.FLAT, cursor='hand2',
-            font=('Segoe UI', 11, 'bold'), padx=16, pady=8,
-            command=self.on_desconectar
+        self.boton_desconectar = crear_boton_redondeado(
+            frame_superior, 'Desconectar', self.on_desconectar,
+            bg='#ed4245', fg='white', fondo_padre=self.tema['panel'],
+            bg_hover='#c93537', ancho=130, alto=36, font=('Segoe UI', 11, 'bold')
         )
-        self.boton_desconectar.pack(side=tk.RIGHT, padx=15)
+        self.boton_desconectar.pack(side=tk.RIGHT, padx=15, pady=6)
 
         # Línea de acento decorativa bajo la barra superior
         tk.Frame(self, bg=self.tema['acento'], height=2).pack(fill=tk.X)
@@ -338,12 +382,21 @@ class ChatFrame(tk.Frame):
         self.label_typing.pack(fill=tk.X, padx=15)
 
         # Barra de estado de conexión
+        frame_estado = tk.Frame(self, bg=self.tema['panel'])
+        frame_estado.pack(fill=tk.X, side=tk.BOTTOM)
+
         texto_estado = f'● Conectado a {self.ip}:{self.puerto}' if self.ip else ''
         self.label_estado = tk.Label(
-            self, text=texto_estado, bg=self.tema['panel'],
+            frame_estado, text=texto_estado, bg=self.tema['panel'],
             fg=self.tema['online'], font=('Segoe UI', 9), anchor='w'
         )
-        self.label_estado.pack(fill=tk.X, side=tk.BOTTOM, ipady=3)
+        self.label_estado.pack(side=tk.LEFT, padx=12, ipady=3)
+
+        tk.Label(
+            frame_estado, text='Sockets TCP · Sistemas Operativos',
+            bg=self.tema['panel'], fg=self.tema['texto_secundario'],
+            font=('Segoe UI', 9), anchor='e'
+        ).pack(side=tk.RIGHT, padx=12, ipady=3)
 
         # Barra inferior de entrada
         frame_inferior = tk.Frame(self, bg=self.tema['panel'], padx=10, pady=10)
@@ -382,28 +435,93 @@ class ChatFrame(tk.Frame):
         )
         self.boton_archivo.pack(side=tk.LEFT, padx=5)
 
-        self.boton_enviar = tk.Button(
-            frame_inferior, text='Enviar', bg=self.tema['acento'], fg='white',
-            activebackground=self.tema['acento_hover'], relief=tk.FLAT,
-            font=('Segoe UI', 11, 'bold'), cursor='hand2',
-            command=self._enviar_mensaje
+        self.boton_enviar = crear_boton_redondeado(
+            frame_inferior, 'Enviar', self._enviar_mensaje,
+            bg=self.tema['acento'], fg='white', fondo_padre=self.tema['panel'],
+            bg_hover=self.tema['acento_hover'], ancho=100, alto=40,
+            font=('Segoe UI', 11, 'bold')
         )
-        self.boton_enviar.pack(side=tk.LEFT, padx=5, ipady=6, ipadx=14)
+        self.boton_enviar.pack(side=tk.LEFT, padx=5)
 
         self._configurar_tags()
+        self._mostrar_marca_agua()
 
     def _configurar_tags(self):
         t = self.tema
+
+        # Texto genérico
         self.area_chat.tag_config('hora', foreground=t['texto_secundario'], font=('Segoe UI', 10))
-        self.area_chat.tag_config('nombre', foreground=t['texto'], font=('Segoe UI', 12, 'bold'))
-        self.area_chat.tag_config('propio_nombre', foreground=t['propio'], font=('Segoe UI', 12, 'bold'))
-        self.area_chat.tag_config('propio_texto', foreground=t['propio'], font=('Segoe UI', 12))
-        self.area_chat.tag_config('otro_texto', foreground=t['texto'], font=('Segoe UI', 12))
-        self.area_chat.tag_config('privado_texto', foreground=t['privado'], font=('Segoe UI', 12))
-        self.area_chat.tag_config('server_texto', foreground=t['server'], font=('Segoe UI', 12))
         self.area_chat.tag_config('historial_texto', foreground=t['historial'], font=('Segoe UI', 11, 'italic'))
-        self.area_chat.tag_config('archivo_texto', foreground=t['archivo'], font=('Segoe UI', 12))
         self.area_chat.tag_config('busqueda', background=t['busqueda'], foreground='black')
+        self.area_chat.tag_config(
+            'divisor', foreground=t['texto_secundario'], font=('Segoe UI', 10, 'italic'),
+            justify=tk.CENTER
+        )
+        self.area_chat.tag_config(
+            'marca_agua', foreground=t['historial'], font=('Lucida Console', 10),
+            justify=tk.CENTER
+        )
+        self.area_chat.tag_config(
+            'marca_agua_texto', foreground=t['texto_secundario'], font=('Segoe UI', 11, 'italic'),
+            justify=tk.CENTER
+        )
+        self.area_chat.tag_config(
+            'server_texto', foreground=t['server'], background=t['server_fondo'],
+            font=('Segoe UI', 12), justify=tk.CENTER
+        )
+
+        # Burbujas: nombre / texto / hora por tipo de mensaje, con fondo propio
+        fondos = {
+            'propio': t['propio_fondo'], 'otro': t['otros_fondo'],
+            'privado': t['privado_fondo'], 'archivo': t['archivo_fondo']
+        }
+        colores_nombre = {
+            'propio': t['propio'], 'otro': t['texto'],
+            'privado': t['texto'], 'archivo': t['texto']
+        }
+        colores_texto = {
+            'propio': t['propio'], 'otro': t['texto'],
+            'privado': t['privado'], 'archivo': t['archivo']
+        }
+        for clave, fondo in fondos.items():
+            self.area_chat.tag_config(
+                f'nombre_{clave}', foreground=colores_nombre[clave], background=fondo,
+                font=('Segoe UI', 12, 'bold')
+            )
+            self.area_chat.tag_config(
+                f'{clave}_texto', foreground=colores_texto[clave], background=fondo,
+                font=('Segoe UI', 12)
+            )
+            self.area_chat.tag_config(
+                f'hora_{clave}', foreground=t['texto_secundario'], background=fondo,
+                font=('Segoe UI', 10)
+            )
+
+        # Mensajes propios alineados a la derecha
+        self.area_chat.tag_config('derecha', justify=tk.RIGHT)
+
+    def _tag_avatar(self, nickname):
+        tag_id = f'avatar_{nickname}'
+        if tag_id not in self.tags_usuario:
+            self.area_chat.tag_config(tag_id, foreground=color_usuario(nickname))
+            self.tags_usuario.add(tag_id)
+        return tag_id
+
+    def _mostrar_marca_agua(self):
+        self.area_chat.config(state=tk.NORMAL)
+        self.area_chat.delete('1.0', tk.END)
+        self.area_chat.insert(tk.END, '\n' * 3)
+        for fila in MASCOTA_ASCII.split('\n'):
+            self.area_chat.insert(tk.END, fila + '\n', 'marca_agua')
+        self.area_chat.insert(tk.END, '\n')
+        self.area_chat.insert(tk.END, 'Aún no hay mensajes en este chat\n', 'marca_agua_texto')
+        self.area_chat.config(state=tk.DISABLED)
+        self._marca_agua_presente = True
+
+    def _limpiar_marca_agua(self):
+        if self._marca_agua_presente:
+            self.area_chat.delete('1.0', tk.END)
+            self._marca_agua_presente = False
 
     def _mostrar_busqueda(self):
         self.frame_busqueda.pack(fill=tk.X, before=self.frame_central)
@@ -455,42 +573,61 @@ class ChatFrame(tk.Frame):
 
     def _agregar_burbuja(self, emisor, contenido, hora, tipo='msg', alinear='izquierda', extra=''):
         self.area_chat.config(state=tk.NORMAL)
+        self._limpiar_marca_agua()
 
         if tipo == 'server':
             self.area_chat.insert(tk.END, '\n')
-            self.area_chat.insert(tk.END, f'  {contenido}  ', 'server_texto')
-            self.area_chat.insert(tk.END, '\n')
+            self.area_chat.insert(tk.END, f'{contenido}\n', 'server_texto')
         elif tipo == 'historial':
+            if not self._historial_mostrado:
+                self.area_chat.insert(tk.END, '\n')
+                self.area_chat.insert(tk.END, '──── Historial anterior ────\n', 'divisor')
+                self._historial_mostrado = True
             self.area_chat.insert(tk.END, f'{hora} ', 'hora')
             self.area_chat.insert(tk.END, f'{contenido}\n', 'historial_texto')
         else:
+            es_propio = (emisor == self.nickname)
+            inicio = self.area_chat.index(tk.END)
             self.area_chat.insert(tk.END, '\n')
 
             if tipo == 'priv':
-                tag_nombre = 'nombre'
+                tag_nombre = 'nombre_privado'
                 tag_texto = 'privado_texto'
-                prefijo = f'[Privado] {emisor}'
+                tag_hora = 'hora_privado'
+                prefijo = '[Privado] Tú' if es_propio else f'[Privado] {emisor}'
             elif tipo == 'archivo':
-                tag_nombre = 'nombre'
+                tag_nombre = 'nombre_archivo'
                 tag_texto = 'archivo_texto'
-                prefijo = f'{emisor}'
-            elif emisor == self.nickname:
-                tag_nombre = 'propio_nombre'
+                tag_hora = 'hora_archivo'
+                prefijo = 'Tú' if es_propio else emisor
+            elif es_propio:
+                tag_nombre = 'nombre_propio'
                 tag_texto = 'propio_texto'
+                tag_hora = 'hora_propio'
                 prefijo = 'Tú'
             else:
-                tag_nombre = 'nombre'
+                tag_nombre = 'nombre_otro'
                 tag_texto = 'otro_texto'
+                tag_hora = 'hora_otro'
                 prefijo = emisor
 
             self.area_chat.insert(tk.END, '┃ ', tag_texto)
-            self.area_chat.insert(tk.END, f'{prefijo}  ', tag_nombre)
-            self.area_chat.insert(tk.END, f'{hora}\n', 'hora')
+            if tipo == 'msg' and not es_propio:
+                avatar = self._tag_avatar(emisor)
+                self.area_chat.insert(tk.END, '● ', (tag_nombre, avatar))
+                self.area_chat.insert(tk.END, f'{prefijo}  ', (tag_nombre, avatar))
+            else:
+                self.area_chat.insert(tk.END, f'{prefijo}  ', tag_nombre)
+            self.area_chat.insert(tk.END, f'{hora}\n', tag_hora)
             self.area_chat.insert(tk.END, '┃ ', tag_texto)
             self.area_chat.insert(tk.END, f'{contenido}\n', tag_texto)
 
             if extra:
-                self.area_chat.insert(tk.END, f'{extra}\n', 'hora')
+                self.area_chat.insert(tk.END, f'{extra}\n', tag_hora)
+
+            if es_propio:
+                fin = self.area_chat.index(tk.END)
+                self.area_chat.tag_add('derecha', inicio, fin)
 
         self.area_chat.see(tk.END)
         self.area_chat.config(state=tk.DISABLED)
@@ -681,9 +818,8 @@ class ChatGUI:
 
     def _limpiar_chat(self):
         if self.chat_frame:
-            self.chat_frame.area_chat.config(state=tk.NORMAL)
-            self.chat_frame.area_chat.delete('1.0', tk.END)
-            self.chat_frame.area_chat.config(state=tk.DISABLED)
+            self.chat_frame._historial_mostrado = False
+            self.chat_frame._mostrar_marca_agua()
 
     def _conectar(self, ip, puerto, nickname):
         try:

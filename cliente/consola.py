@@ -62,6 +62,17 @@ def color(texto, codigo):
     return f'{codigo}{texto}{Color.RESET}'
 
 
+# Colores de intensidad normal (no los "brillantes" de Color), usados solo
+# para distinguir nicknames de otros usuarios sin chocar con los colores
+# que ya tienen un significado fijo (azul=propio, amarillo=privado, etc.)
+PALETA_USUARIOS = ['\033[34m', '\033[32m', '\033[33m', '\033[35m', '\033[36m', '\033[31m']
+
+
+def color_usuario(nickname):
+    indice = sum(ord(c) for c in nickname) % len(PALETA_USUARIOS)
+    return PALETA_USUARIOS[indice]
+
+
 MASCOTA_ASCII = [
     "  █     █  ",
     "   █   █   ",
@@ -125,6 +136,8 @@ def imprimir_banner():
         print(margen + color('╔' + '═' * (ANCHO_BANNER - 2) + '╗', Color.AZUL))
         print(margen + color('║' + 'CHAT CON SOCKETS - CONSOLA'.center(ANCHO_BANNER - 2) + '║', Color.AZUL))
         print(margen + color('║' + 'Laboratorio de Sistemas Operativos'.center(ANCHO_BANNER - 2) + '║', Color.GRIS))
+        print(margen + color('╟' + '─' * (ANCHO_BANNER - 2) + '╢', Color.AZUL))
+        print(margen + color('║', Color.AZUL) + color(' ➤ Datos de conexión'.ljust(ANCHO_BANNER - 2), Color.FONDO_GRIS + Color.BOLD) + color('║', Color.AZUL))
         print(margen + color('╚' + '═' * (ANCHO_BANNER - 2) + '╝', Color.AZUL))
         print()
 
@@ -149,6 +162,13 @@ def imprimir_ayuda():
         print(f'{margen}  {color("/salir", Color.AMARILLO)}                       Desconectarse              ({color("/s", Color.AMARILLO)})')
         print(f'{margen}  {color("/ayuda", Color.AMARILLO)}                       Mostrar esta ayuda         ({color("/h", Color.AMARILLO)})')
         imprimir_separador()
+        print(
+            f'{margen}  {color("●", Color.AMARILLO)} comando  '
+            f'{color("●", Color.VERDE)} servidor  '
+            f'{color("●", Color.AMARILLO)} privado  '
+            f'{color("●", Color.MAGENTA)} archivo  '
+            f'{color("●", Color.GRIS)} historial'
+        )
         print()
 
 
@@ -160,6 +180,7 @@ class ClienteConsola:
         self.conectado = False
         self.hilo_escucha = None
         self.historial = []
+        self.historial_mostrado = False
         self.ultimo_typing = 0
         self.ip = '127.0.0.1'
         self.puerto = 5000
@@ -200,7 +221,14 @@ class ClienteConsola:
         if self.sock:
             cerrar(self.sock)
             self.sock = None
-        print(color('\nDesconectado.', Color.VERDE))
+        with LOCK_IMPRESION:
+            margen = _margen_centrado()
+            print()
+            print(margen + color('╔' + '═' * (ANCHO_BANNER - 2) + '╗', Color.VERDE))
+            print(margen + color('║' + '¡Gracias por usar el chat!'.center(ANCHO_BANNER - 2) + '║', Color.VERDE))
+            print(margen + color('║' + 'Desconectado del servidor'.center(ANCHO_BANNER - 2) + '║', Color.GRIS))
+            print(margen + color('╚' + '═' * (ANCHO_BANNER - 2) + '╝', Color.VERDE))
+            print()
 
     def reconectar(self):
         self.desconectar()
@@ -234,38 +262,44 @@ class ClienteConsola:
             emisor = mensaje.get('emisor')
             contenido = mensaje.get('contenido')
             if emisor == self.nickname:
-                linea = f'{color("[Tú]", Color.AZUL)} {color(hora, Color.GRIS)}: {color(contenido, Color.AZUL)}'
+                linea = color(f' {color("[Tú]", Color.BOLD + Color.BLANCO)} {hora}: {contenido} ', Color.FONDO_AZUL)
             else:
-                linea = f'{color(emisor, Color.BOLD)} {color(hora, Color.GRIS)}: {contenido}'
+                nombre = color(emisor, Color.BOLD + color_usuario(emisor))
+                linea = f'{nombre} {color(hora, Color.GRIS)}: {contenido}'
                 reproducir_beep()
 
         elif tipo == 'priv':
             emisor = mensaje.get('emisor')
             contenido = mensaje.get('contenido')
-            linea = f'{color("[PRIVADO", Color.AMARILLO)} {color("de", Color.AMARILLO)} {color(emisor, Color.BOLD)}{color("]", Color.AMARILLO)} {color(hora, Color.GRIS)}: {color(contenido, Color.AMARILLO)}'
+            linea = f'🔒 {color("[PRIVADO", Color.AMARILLO)} {color("de", Color.AMARILLO)} {color(emisor, Color.BOLD)}{color("]", Color.AMARILLO)} {color(hora, Color.GRIS)}: {color(contenido, Color.AMARILLO)}'
             if emisor != self.nickname:
                 reproducir_beep()
 
         elif tipo == 'server':
-            linea = f'{color("[SERVIDOR]", Color.VERDE)} {mensaje.get("contenido")}'
+            linea = f'ℹ️  {color("[SERVIDOR]", Color.VERDE)} {mensaje.get("contenido")}'
 
         elif tipo == 'usuarios':
             usuarios = mensaje.get('contenido', [])
             lista = ', '.join(usuarios) or '(ninguno)'
-            linea = f'{color("[USUARIOS]", Color.CIAN)} {lista}'
+            linea = f'👥 {color("[USUARIOS]", Color.CIAN)} {lista}'
 
         elif tipo == 'historial':
-            linea = f'{color("[HISTORIAL]", Color.GRIS)} {mensaje.get("contenido")}'
+            if not self.historial_mostrado:
+                with LOCK_IMPRESION:
+                    print()
+                    print(_margen_centrado() + color('──── Historial anterior ────', Color.GRIS))
+                self.historial_mostrado = True
+            linea = f'🕘 {color("[HISTORIAL]", Color.GRIS)} {mensaje.get("contenido")}'
 
         elif tipo == 'file':
             emisor = mensaje.get('emisor')
             nombre = mensaje.get('nombre_archivo')
             tipo_archivo = 'IMAGEN' if es_imagen(nombre) else 'ARCHIVO'
             if emisor == self.nickname:
-                linea = f'{color(f"[{tipo_archivo} enviado]", Color.MAGENTA)} {nombre} → {mensaje.get("destinatario", "todos")}'
+                linea = f'📎 {color(f"[{tipo_archivo} enviado]", Color.MAGENTA)} {nombre} → {mensaje.get("destinatario", "todos")}'
             else:
                 ruta = guardar_archivo(emisor, nombre, mensaje.get('datos'))
-                linea = f'{color(f"[{tipo_archivo} de", Color.MAGENTA)} {color(emisor, Color.BOLD)}{color("]", Color.MAGENTA)} {nombre}\n    Guardado en: {ruta}'
+                linea = f'📎 {color(f"[{tipo_archivo} de", Color.MAGENTA)} {color(emisor, Color.BOLD)}{color("]", Color.MAGENTA)} {nombre}\n    Guardado en: {ruta}'
                 reproducir_beep()
 
         elif tipo == 'typing':
@@ -283,7 +317,7 @@ class ClienteConsola:
                 self._mostrar_sign()
 
     def _mostrar_server(self, texto):
-        linea = f'{color("[SERVIDOR]", Color.VERDE)} {texto}'
+        linea = f'ℹ️  {color("[SERVIDOR]", Color.VERDE)} {texto}'
         self.historial.append(linea)
         with LOCK_IMPRESION:
             print(linea)
@@ -390,8 +424,6 @@ class ClienteConsola:
     def run(self):
         imprimir_banner()
 
-        print(_margen_centrado() + color('  ➤ Datos de conexión', Color.BOLD))
-        imprimir_separador()
         ip = input(color('  IP del servidor', Color.BOLD) + ' (127.0.0.1): ').strip() or '127.0.0.1'
         puerto_str = input(color('  Puerto', Color.BOLD) + ' (5000): ').strip() or '5000'
         try:
