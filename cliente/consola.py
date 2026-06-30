@@ -23,7 +23,17 @@ def _habilitar_colores_windows():
             pass
 
 
+def _asegurar_utf8():
+    # Evita UnicodeEncodeError con los caracteres de caja/bloque si la
+    # salida no está en una consola UTF-8 (p. ej. redirigida a un archivo).
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
+
 _habilitar_colores_windows()
+_asegurar_utf8()
 
 
 class Color:
@@ -44,6 +54,20 @@ class Color:
 
 def color(texto, codigo):
     return f'{codigo}{texto}{Color.RESET}'
+
+
+MASCOTA_ASCII = [
+    "  █     █  ",
+    "   █   █   ",
+    "  ███████  ",
+    " ██ ███ ██ ",
+    "███████████",
+    "█ ███████ █",
+    "█ █     █ █",
+    "   █   █   ",
+]
+
+ANCHO_BANNER = 44
 
 
 def reproducir_beep():
@@ -71,16 +95,32 @@ def limpiar_pantalla_mensajes():
         os.system('clear')
 
 
+def imprimir_mascota():
+    print()
+    for fila in MASCOTA_ASCII:
+        print(color(fila.center(ANCHO_BANNER), Color.VERDE))
+    print()
+
+
 def imprimir_banner():
     print()
-    print(color('╔══════════════════════════════════════════╗', Color.AZUL))
-    print(color('║        CHAT CON SOCKETS - CONSOLA        ║', Color.AZUL))
-    print(color('╚══════════════════════════════════════════╝', Color.AZUL))
+    imprimir_mascota()
+    print(color('╔' + '═' * (ANCHO_BANNER - 2) + '╗', Color.AZUL))
+    print(color('║' + 'CHAT CON SOCKETS - CONSOLA'.center(ANCHO_BANNER - 2) + '║', Color.AZUL))
+    print(color('║' + 'Laboratorio de Sistemas Operativos'.center(ANCHO_BANNER - 2) + '║', Color.GRIS))
+    print(color('╚' + '═' * (ANCHO_BANNER - 2) + '╝', Color.AZUL))
     print()
+
+
+def imprimir_separador():
+    print(color('─' * ANCHO_BANNER, Color.GRIS))
 
 
 def imprimir_ayuda():
-    print(color('\nComandos disponibles:', Color.BOLD))
+    print()
+    print(color('┌' + '─' * (ANCHO_BANNER - 2) + '┐', Color.CIAN))
+    print(color('│' + 'COMANDOS DISPONIBLES'.center(ANCHO_BANNER - 2) + '│', Color.CIAN))
+    print(color('└' + '─' * (ANCHO_BANNER - 2) + '┘', Color.CIAN))
     print(f'  {color("/privado", Color.AMARILLO)} <usuario> <mensaje>  Enviar mensaje privado  ({color("/p", Color.AMARILLO)})')
     print(f'  {color("/usuarios", Color.AMARILLO)}                    Ver usuarios conectados  ({color("/u", Color.AMARILLO)})')
     print(f'  {color("/archivo", Color.AMARILLO)} <ruta> [usuario]    Enviar archivo             ({color("/a", Color.AMARILLO)})')
@@ -88,7 +128,9 @@ def imprimir_ayuda():
     print(f'  {color("/limpiar", Color.AMARILLO)}                     Limpiar pantalla           ({color("/clear", Color.AMARILLO)})')
     print(f'  {color("/reconectar", Color.AMARILLO)}                  Intentar reconectar        ({color("/r", Color.AMARILLO)})')
     print(f'  {color("/salir", Color.AMARILLO)}                       Desconectarse              ({color("/s", Color.AMARILLO)})')
-    print(f'  {color("/ayuda", Color.AMARILLO)}                       Mostrar esta ayuda         ({color("/h", Color.AMARILLO)})\n')
+    print(f'  {color("/ayuda", Color.AMARILLO)}                       Mostrar esta ayuda         ({color("/h", Color.AMARILLO)})')
+    imprimir_separador()
+    print()
 
 
 
@@ -124,6 +166,7 @@ class ClienteConsola:
             return False
 
         self.conectado = True
+        print(color(f'✓ Conectado como {nickname} a {ip}:{puerto}', Color.VERDE))
 
         if respuesta:
             self._mostrar_server(respuesta.get('contenido'))
@@ -323,18 +366,21 @@ class ClienteConsola:
     def run(self):
         imprimir_banner()
 
-        ip = input(color('IP del servidor', Color.BOLD) + ' (127.0.0.1): ').strip() or '127.0.0.1'
-        puerto_str = input(color('Puerto', Color.BOLD) + ' (5000): ').strip() or '5000'
+        print(color('  ➤ Datos de conexión', Color.BOLD))
+        imprimir_separador()
+        ip = input(color('  IP del servidor', Color.BOLD) + ' (127.0.0.1): ').strip() or '127.0.0.1'
+        puerto_str = input(color('  Puerto', Color.BOLD) + ' (5000): ').strip() or '5000'
         try:
             self.puerto = int(puerto_str)
         except ValueError:
             print(color('Puerto inválido.', Color.ROJO))
             return
 
-        self.nickname = input(color('Nickname', Color.BOLD) + ': ').strip()
+        self.nickname = input(color('  Nickname', Color.BOLD) + ': ').strip()
         if not self.nickname:
             print(color('El nickname no puede estar vacío.', Color.ROJO))
             return
+        imprimir_separador()
 
         if not self.conectar(ip, self.puerto, self.nickname):
             return
