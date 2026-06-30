@@ -7,8 +7,11 @@ from datetime import datetime
 
 HOST = '0.0.0.0'
 PUERTO = 5000
-ARCHIVO_HISTORIAL = 'historial_chat.txt'
-CARPETA_ARCHIVOS = 'archivos_recibidos'
+
+# Rutas relativas a la ubicación de este archivo
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ARCHIVO_HISTORIAL = os.path.join(BASE_DIR, 'historial_chat.txt')
+CARPETA_ARCHIVOS = os.path.join(BASE_DIR, 'archivos_recibidos')
 
 # Diccionario global de clientes conectados: nickname -> socket
 clientes = {}
@@ -107,7 +110,7 @@ def manejar_archivo(emisor, destinatario, nombre_archivo, datos_base64):
     }
 
     if destinatario == 'todos':
-        broadcast(mensaje)
+        broadcast(mensaje, excluir=emisor)
     else:
         enviar_privado(destinatario, mensaje)
         with lock:
@@ -197,6 +200,18 @@ def manejar_cliente(socket_cliente, direccion):
                 nombre_archivo = mensaje.get('nombre_archivo', 'archivo')
                 datos = mensaje.get('datos', '')
                 manejar_archivo(nickname, destinatario, nombre_archivo, datos)
+
+            elif tipo == 'typing':
+                destinatario = mensaje.get('destinatario', 'todos')
+                notificacion = {
+                    'tipo': 'typing',
+                    'emisor': nickname,
+                    'destinatario': destinatario
+                }
+                if destinatario == 'todos':
+                    broadcast(notificacion, excluir=nickname)
+                else:
+                    enviar_privado(destinatario, notificacion)
 
             elif tipo == 'exit':
                 break

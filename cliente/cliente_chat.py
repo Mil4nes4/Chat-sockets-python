@@ -53,6 +53,10 @@ def solicitar_lista(socket_cliente):
     enviar(socket_cliente, {'tipo': 'list'})
 
 
+def enviar_typing(socket_cliente, destinatario='todos'):
+    enviar(socket_cliente, {'tipo': 'typing', 'destinatario': destinatario})
+
+
 def enviar_archivo(socket_cliente, ruta, destinatario='todos'):
     nombre = os.path.basename(ruta)
     with open(ruta, 'rb') as f:
