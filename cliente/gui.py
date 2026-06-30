@@ -78,6 +78,27 @@ def obtener_iniciales(nombre):
     return nombre[:2].upper()
 
 
+def crear_icono_mascota(tema, escala=3):
+    patron = [
+        "  X     X  ",
+        "   X   X   ",
+        "  XXXXXXX  ",
+        " XX XXX XX ",
+        "XXXXXXXXXXX",
+        "X XXXXXXX X",
+        "X X     X X",
+        "   X   X   ",
+    ]
+    filas, columnas = len(patron), len(patron[0])
+    img = tk.PhotoImage(width=columnas, height=filas)
+    img.put(tema['panel'], to=(0, 0, columnas, filas))
+    for y, fila in enumerate(patron):
+        for x, caracter in enumerate(fila):
+            if caracter == 'X':
+                img.put(tema['server'], to=(x, y, x + 1, y + 1))
+    return img.zoom(escala, escala)
+
+
 def configurar_estilo_ttk(tema):
     style = ttk.Style()
     style.theme_use('clam')
@@ -118,7 +139,7 @@ class LoginFrame(tk.Frame):
         tk.Label(
             frame_central, text=MASCOTA_ASCII,
             bg=self.tema['panel'], fg=self.tema['server'],
-            font=('Courier New', 11, 'bold'), justify=tk.CENTER
+            font=('Lucida Console', 10, 'bold'), justify=tk.CENTER
         ).pack(pady=(0, 14))
 
         tk.Label(
@@ -195,10 +216,12 @@ class LoginFrame(tk.Frame):
 
 # PANTALLA DE CHAT
 class ChatFrame(tk.Frame):
-    def __init__(self, master, tema, on_desconectar, **kwargs):
+    def __init__(self, master, tema, on_desconectar, ip='', puerto=None, **kwargs):
         super().__init__(master, bg=tema['fondo'], **kwargs)
         self.tema = tema
         self.on_desconectar = on_desconectar
+        self.ip = ip
+        self.puerto = puerto
         self.nickname = ''
         self.conectado = False
         self.sock = None
@@ -217,7 +240,7 @@ class ChatFrame(tk.Frame):
         frame_superior.pack_propagate(False)
 
         self.label_titulo = tk.Label(
-            frame_superior, text='Chat con Sockets',
+            frame_superior, text='👾 Chat con Sockets',
             bg=self.tema['panel'], fg=self.tema['texto'],
             font=('Segoe UI', 13, 'bold')
         )
@@ -298,7 +321,12 @@ class ChatFrame(tk.Frame):
         )
         self.area_chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        scrollbar = tk.Scrollbar(frame_chat, command=self.area_chat.yview)
+        scrollbar = tk.Scrollbar(
+            frame_chat, command=self.area_chat.yview,
+            bg=self.tema['borde'], troughcolor=self.tema['panel'],
+            activebackground=self.tema['acento'], relief=tk.FLAT,
+            highlightthickness=0, borderwidth=0, elementborderwidth=0
+        )
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.area_chat.config(yscrollcommand=scrollbar.set)
 
@@ -309,9 +337,20 @@ class ChatFrame(tk.Frame):
         )
         self.label_typing.pack(fill=tk.X, padx=15)
 
+        # Barra de estado de conexión
+        texto_estado = f'● Conectado a {self.ip}:{self.puerto}' if self.ip else ''
+        self.label_estado = tk.Label(
+            self, text=texto_estado, bg=self.tema['panel'],
+            fg=self.tema['online'], font=('Segoe UI', 9), anchor='w'
+        )
+        self.label_estado.pack(fill=tk.X, side=tk.BOTTOM, ipady=3)
+
         # Barra inferior de entrada
         frame_inferior = tk.Frame(self, bg=self.tema['panel'], padx=10, pady=10)
         frame_inferior.pack(fill=tk.X, side=tk.BOTTOM)
+
+        # Línea de acento decorativa sobre la barra de envío (simétrica a la de arriba)
+        tk.Frame(self, bg=self.tema['acento'], height=2).pack(fill=tk.X, side=tk.BOTTOM)
 
         self.entry_mensaje = tk.Entry(
             frame_inferior, bg=self.tema['entrada'], fg=self.tema['texto'],
@@ -444,8 +483,10 @@ class ChatFrame(tk.Frame):
                 tag_texto = 'otro_texto'
                 prefijo = emisor
 
+            self.area_chat.insert(tk.END, '┃ ', tag_texto)
             self.area_chat.insert(tk.END, f'{prefijo}  ', tag_nombre)
             self.area_chat.insert(tk.END, f'{hora}\n', 'hora')
+            self.area_chat.insert(tk.END, '┃ ', tag_texto)
             self.area_chat.insert(tk.END, f'{contenido}\n', tag_texto)
 
             if extra:
@@ -539,7 +580,7 @@ class ChatFrame(tk.Frame):
             if u != self.nickname:
                 valores.append(u)
         self.combo_destinatario['values'] = valores
-        self.label_titulo.config(text=f'Chat con Sockets - {len(usuarios)} en línea')
+        self.label_titulo.config(text=f'👾 Chat con Sockets - {len(usuarios)} en línea')
 
     def _enviar_mensaje(self):
         texto = self.entry_mensaje.get().strip()
@@ -615,6 +656,12 @@ class ChatGUI:
         self.conectado = False
         self.hilo_escucha = None
 
+        try:
+            self._icono = crear_icono_mascota(self.tema)
+            self.root.iconphoto(True, self._icono)
+        except Exception:
+            pass
+
         configurar_estilo_ttk(self.tema)
         self.root.option_add('*TCombobox*Listbox.background', self.tema['entrada'])
         self.root.option_add('*TCombobox*Listbox.foreground', self.tema['texto'])
@@ -660,17 +707,16 @@ class ChatGUI:
         self.login_frame.pack_forget()
 
         self.chat_frame = ChatFrame(
-            self.root, self.tema, self._desconectar
+            self.root, self.tema, self._desconectar, ip=ip, puerto=puerto
         )
         self.chat_frame.sock = self.sock
         self.chat_frame.nickname = nickname
         self.chat_frame.conectado = True
         self.chat_frame.pack(fill=tk.BOTH, expand=True)
 
-        if respuesta:
-            self.chat_frame._manejar_mensaje({
-                'tipo': 'server', 'contenido': respuesta.get('contenido')
-            })
+        self.chat_frame._manejar_mensaje({
+            'tipo': 'server', 'contenido': f'👾 ¡Bienvenido, {nickname}!'
+        })
 
         self.hilo_escucha = threading.Thread(
             target=self.chat_frame._escuchar, daemon=True

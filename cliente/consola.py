@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import threading
 import time
@@ -35,6 +36,11 @@ def _asegurar_utf8():
 _habilitar_colores_windows()
 _asegurar_utf8()
 
+# Evita que el hilo que escucha al servidor reimprima el prompt "> " en
+# medio de un bloque de varias líneas (p. ej. la ayuda) impreso por el
+# hilo principal.
+LOCK_IMPRESION = threading.RLock()
+
 
 class Color:
     RESET = '\033[0m'
@@ -67,7 +73,15 @@ MASCOTA_ASCII = [
     "   █   █   ",
 ]
 
-ANCHO_BANNER = 44
+ANCHO_BANNER = 60
+
+
+def _margen_centrado():
+    # Centra los recuadros según el ancho real de la terminal. Si no se
+    # puede detectar (p. ej. salida redirigida a un archivo), usa 80
+    # columnas por defecto en vez de fallar.
+    ancho_terminal = shutil.get_terminal_size(fallback=(80, 24)).columns
+    return ' ' * max((ancho_terminal - ANCHO_BANNER) // 2, 0)
 
 
 def reproducir_beep():
@@ -96,41 +110,46 @@ def limpiar_pantalla_mensajes():
 
 
 def imprimir_mascota():
+    margen = _margen_centrado()
     print()
     for fila in MASCOTA_ASCII:
-        print(color(fila.center(ANCHO_BANNER), Color.VERDE))
+        print(margen + color(fila.center(ANCHO_BANNER), Color.VERDE))
     print()
 
 
 def imprimir_banner():
-    print()
-    imprimir_mascota()
-    print(color('╔' + '═' * (ANCHO_BANNER - 2) + '╗', Color.AZUL))
-    print(color('║' + 'CHAT CON SOCKETS - CONSOLA'.center(ANCHO_BANNER - 2) + '║', Color.AZUL))
-    print(color('║' + 'Laboratorio de Sistemas Operativos'.center(ANCHO_BANNER - 2) + '║', Color.GRIS))
-    print(color('╚' + '═' * (ANCHO_BANNER - 2) + '╝', Color.AZUL))
-    print()
+    with LOCK_IMPRESION:
+        margen = _margen_centrado()
+        print()
+        imprimir_mascota()
+        print(margen + color('╔' + '═' * (ANCHO_BANNER - 2) + '╗', Color.AZUL))
+        print(margen + color('║' + 'CHAT CON SOCKETS - CONSOLA'.center(ANCHO_BANNER - 2) + '║', Color.AZUL))
+        print(margen + color('║' + 'Laboratorio de Sistemas Operativos'.center(ANCHO_BANNER - 2) + '║', Color.GRIS))
+        print(margen + color('╚' + '═' * (ANCHO_BANNER - 2) + '╝', Color.AZUL))
+        print()
 
 
 def imprimir_separador():
-    print(color('─' * ANCHO_BANNER, Color.GRIS))
+    print(_margen_centrado() + color('─' * ANCHO_BANNER, Color.GRIS))
 
 
 def imprimir_ayuda():
-    print()
-    print(color('┌' + '─' * (ANCHO_BANNER - 2) + '┐', Color.CIAN))
-    print(color('│' + 'COMANDOS DISPONIBLES'.center(ANCHO_BANNER - 2) + '│', Color.CIAN))
-    print(color('└' + '─' * (ANCHO_BANNER - 2) + '┘', Color.CIAN))
-    print(f'  {color("/privado", Color.AMARILLO)} <usuario> <mensaje>  Enviar mensaje privado  ({color("/p", Color.AMARILLO)})')
-    print(f'  {color("/usuarios", Color.AMARILLO)}                    Ver usuarios conectados  ({color("/u", Color.AMARILLO)})')
-    print(f'  {color("/archivo", Color.AMARILLO)} <ruta> [usuario]    Enviar archivo             ({color("/a", Color.AMARILLO)})')
-    print(f'  {color("/buscar", Color.AMARILLO)} <texto>              Buscar en el historial     ({color("/b", Color.AMARILLO)})')
-    print(f'  {color("/limpiar", Color.AMARILLO)}                     Limpiar pantalla           ({color("/clear", Color.AMARILLO)})')
-    print(f'  {color("/reconectar", Color.AMARILLO)}                  Intentar reconectar        ({color("/r", Color.AMARILLO)})')
-    print(f'  {color("/salir", Color.AMARILLO)}                       Desconectarse              ({color("/s", Color.AMARILLO)})')
-    print(f'  {color("/ayuda", Color.AMARILLO)}                       Mostrar esta ayuda         ({color("/h", Color.AMARILLO)})')
-    imprimir_separador()
-    print()
+    with LOCK_IMPRESION:
+        margen = _margen_centrado()
+        print()
+        print(margen + color('┌' + '─' * (ANCHO_BANNER - 2) + '┐', Color.CIAN))
+        print(margen + color('│' + 'COMANDOS DISPONIBLES'.center(ANCHO_BANNER - 2) + '│', Color.CIAN))
+        print(margen + color('└' + '─' * (ANCHO_BANNER - 2) + '┘', Color.CIAN))
+        print(f'{margen}  {color("/privado", Color.AMARILLO)} <usuario> <mensaje>  Enviar mensaje privado  ({color("/p", Color.AMARILLO)})')
+        print(f'{margen}  {color("/usuarios", Color.AMARILLO)}                    Ver usuarios conectados  ({color("/u", Color.AMARILLO)})')
+        print(f'{margen}  {color("/archivo", Color.AMARILLO)} <ruta> [usuario]    Enviar archivo             ({color("/a", Color.AMARILLO)})')
+        print(f'{margen}  {color("/buscar", Color.AMARILLO)} <texto>              Buscar en el historial     ({color("/b", Color.AMARILLO)})')
+        print(f'{margen}  {color("/limpiar", Color.AMARILLO)}                     Limpiar pantalla           ({color("/clear", Color.AMARILLO)})')
+        print(f'{margen}  {color("/reconectar", Color.AMARILLO)}                  Intentar reconectar        ({color("/r", Color.AMARILLO)})')
+        print(f'{margen}  {color("/salir", Color.AMARILLO)}                       Desconectarse              ({color("/s", Color.AMARILLO)})')
+        print(f'{margen}  {color("/ayuda", Color.AMARILLO)}                       Mostrar esta ayuda         ({color("/h", Color.AMARILLO)})')
+        imprimir_separador()
+        print()
 
 
 
@@ -259,21 +278,25 @@ class ClienteConsola:
 
         if linea:
             self.historial.append(linea)
-            print(f'\n{linea}')
-            self._mostrar_sign()
+            with LOCK_IMPRESION:
+                print(f'\n{linea}')
+                self._mostrar_sign()
 
     def _mostrar_server(self, texto):
         linea = f'{color("[SERVIDOR]", Color.VERDE)} {texto}'
         self.historial.append(linea)
-        print(linea)
+        with LOCK_IMPRESION:
+            print(linea)
 
     def _mostrar_typing(self, emisor):
-        print(f'\r{color(f"{emisor} está escribiendo...", Color.GRIS)}', end='', flush=True)
+        with LOCK_IMPRESION:
+            print(f'\r{color(f"{emisor} está escribiendo...", Color.GRIS)}', end='', flush=True)
         threading.Timer(3.0, self._mostrar_sign).start()
 
     def _mostrar_sign(self):
         if self.conectado:
-            print('\r> ', end='', flush=True)
+            with LOCK_IMPRESION:
+                print('\r> ', end='', flush=True)
 
     def _on_typing(self):
         if not self.conectado or not self.sock:
@@ -347,16 +370,17 @@ class ClienteConsola:
 
     def _buscar(self, texto):
         coincidencias = [linea for linea in self.historial if texto.lower() in linea.lower()]
-        print(color(f'\n[BUSCAR] {len(coincidencias)} coincidencias para "{texto}":', Color.CIAN))
-        for linea in coincidencias:
-            resaltada = linea.replace(
-                texto, color(texto, Color.AMARILLO)
-            ).replace(
-                texto.capitalize(), color(texto.capitalize(), Color.AMARILLO)
-            )
-            print(f'  {resaltada}')
-        if not coincidencias:
-            print(color('  No se encontraron coincidencias.', Color.GRIS))
+        with LOCK_IMPRESION:
+            print(color(f'\n[BUSCAR] {len(coincidencias)} coincidencias para "{texto}":', Color.CIAN))
+            for linea in coincidencias:
+                resaltada = linea.replace(
+                    texto, color(texto, Color.AMARILLO)
+                ).replace(
+                    texto.capitalize(), color(texto.capitalize(), Color.AMARILLO)
+                )
+                print(f'  {resaltada}')
+            if not coincidencias:
+                print(color('  No se encontraron coincidencias.', Color.GRIS))
 
     def _limpiar(self):
         limpiar_pantalla_mensajes()
@@ -366,7 +390,7 @@ class ClienteConsola:
     def run(self):
         imprimir_banner()
 
-        print(color('  ➤ Datos de conexión', Color.BOLD))
+        print(_margen_centrado() + color('  ➤ Datos de conexión', Color.BOLD))
         imprimir_separador()
         ip = input(color('  IP del servidor', Color.BOLD) + ' (127.0.0.1): ').strip() or '127.0.0.1'
         puerto_str = input(color('  Puerto', Color.BOLD) + ' (5000): ').strip() or '5000'
