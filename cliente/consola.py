@@ -142,6 +142,8 @@ class ClienteConsola:
 
     def reconectar(self):
         self.desconectar()
+        if self.hilo_escucha and self.hilo_escucha.is_alive():
+            self.hilo_escucha.join(timeout=2.0)
         print(color('\nIntentando reconectar...', Color.AMARILLO))
         time.sleep(1)
         return self.conectar(self.ip, self.puerto, self.nickname)
@@ -196,12 +198,11 @@ class ClienteConsola:
         elif tipo == 'file':
             emisor = mensaje.get('emisor')
             nombre = mensaje.get('nombre_archivo')
-            datos = mensaje.get('datos')
-            ruta = guardar_archivo(emisor, nombre, datos)
             tipo_archivo = 'IMAGEN' if es_imagen(nombre) else 'ARCHIVO'
             if emisor == self.nickname:
                 linea = f'{color(f"[{tipo_archivo} enviado]", Color.MAGENTA)} {nombre} → {mensaje.get("destinatario", "todos")}'
             else:
+                ruta = guardar_archivo(emisor, nombre, mensaje.get('datos'))
                 linea = f'{color(f"[{tipo_archivo} de", Color.MAGENTA)} {color(emisor, Color.BOLD)}{color("]", Color.MAGENTA)} {nombre}\n    Guardado en: {ruta}'
                 reproducir_beep()
 
@@ -298,7 +299,6 @@ class ClienteConsola:
 
         else:
             enviar_mensaje_publico(self.sock, entrada)
-            self._on_typing()
 
         return True
 

@@ -20,9 +20,12 @@ def enviar(socket_cliente, mensaje):
 
 
 def recibir(socket_cliente):
-    longitud_bytes = socket_cliente.recv(4)
-    if not longitud_bytes:
-        return None
+    longitud_bytes = b''
+    while len(longitud_bytes) < 4:
+        chunk = socket_cliente.recv(4 - len(longitud_bytes))
+        if not chunk:
+            return None
+        longitud_bytes += chunk
     longitud = int.from_bytes(longitud_bytes, byteorder='big')
     data = b''
     while len(data) < longitud:

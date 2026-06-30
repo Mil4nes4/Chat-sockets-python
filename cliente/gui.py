@@ -205,7 +205,7 @@ class ChatFrame(tk.Frame):
         self.boton_tema = tk.Button(
             frame_superior, text='Tema claro', bg=self.tema['entrada'],
             fg=self.tema['texto'], relief=tk.FLAT, cursor='hand2',
-            command=self._cambiar_tema
+            command=lambda: self._cambiar_tema()
         )
         self.boton_tema.pack(side=tk.RIGHT, padx=5)
 
@@ -357,7 +357,6 @@ class ChatFrame(tk.Frame):
         if not texto:
             return
         self.area_chat.config(state=tk.NORMAL)
-        contenido = self.area_chat.get('1.0', tk.END).lower()
         inicio = '1.0'
         while True:
             pos = self.area_chat.search(texto, inicio, tk.END, nocase=1)
@@ -478,16 +477,15 @@ class ChatFrame(tk.Frame):
         elif tipo == 'file':
             emisor = mensaje.get('emisor')
             nombre = mensaje.get('nombre_archivo')
-            datos = mensaje.get('datos')
-            ruta = guardar_archivo(emisor, nombre, datos)
-            self._agregar_burbuja(
-                emisor, f'Archivo: {nombre}', hora, 'archivo',
-                extra=f'Guardado en: {ruta}'
-            )
-            if es_imagen(nombre):
-                self._mostrar_preview_imagen(ruta, emisor)
             if emisor != self.nickname:
+                ruta = guardar_archivo(emisor, nombre, mensaje.get('datos'))
+                extra = f'Guardado en: {ruta}'
+                if es_imagen(nombre):
+                    self._mostrar_preview_imagen(ruta, emisor)
                 reproducir_beep()
+            else:
+                extra = f'Enviado a {mensaje.get("destinatario", "todos")}'
+            self._agregar_burbuja(emisor, f'Archivo: {nombre}', hora, 'archivo', extra=extra)
 
         elif tipo == 'typing':
             emisor = mensaje.get('emisor')
@@ -669,13 +667,15 @@ class ChatGUI:
     def _cambiar_tema(self):
         nuevo_tema = TEMA_CLARO if self.tema['nombre'] == 'oscuro' else TEMA_OSCURO
         self.tema = nuevo_tema
-        if self.chat_frame:
-            self.chat_frame.pack_forget()
+
+        old_frame = self.chat_frame
+        if old_frame:
+            old_frame.conectado = False  # señal al hilo viejo para que salga
+            old_frame.pack_forget()
         if self.login_frame:
             self.login_frame.pack_forget()
 
-        # Recrear la vista actual
-        if self.conectado and self.chat_frame:
+        if self.conectado and old_frame:
             self.chat_frame = ChatFrame(self.root, self.tema, self._desconectar)
             self.chat_frame.sock = self.sock
             self.chat_frame.nickname = self.nickname
@@ -685,7 +685,12 @@ class ChatGUI:
             self.chat_frame._manejar_mensaje({
                 'tipo': 'server', 'contenido': 'Tema cambiado.'
             })
+            self.hilo_escucha = threading.Thread(
+                target=self.chat_frame._escuchar, daemon=True
+            )
+            self.hilo_escucha.start()
         else:
+            self.chat_frame = None
             self.login_frame = LoginFrame(self.root, self.tema, self._conectar)
             self.login_frame.pack(fill=tk.BOTH, expand=True)
 

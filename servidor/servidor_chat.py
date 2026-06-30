@@ -7,6 +7,7 @@ from datetime import datetime
 
 HOST = '0.0.0.0'
 PUERTO = 5000
+MAX_ARCHIVO_MB = 50
 
 # Rutas relativas a la ubicación de este archivo
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -41,9 +42,12 @@ def enviar(socket_cliente, mensaje):
 
 
 def recibir(socket_cliente):
-    longitud_bytes = socket_cliente.recv(4)
-    if not longitud_bytes:
-        return None
+    longitud_bytes = b''
+    while len(longitud_bytes) < 4:
+        chunk = socket_cliente.recv(4 - len(longitud_bytes))
+        if not chunk:
+            return None
+        longitud_bytes += chunk
     longitud = int.from_bytes(longitud_bytes, byteorder='big')
     data = b''
     while len(data) < longitud:
@@ -91,6 +95,13 @@ def enviar_historial(socket_cliente):
 
 
 def manejar_archivo(emisor, destinatario, nombre_archivo, datos_base64):
+    if len(datos_base64) > MAX_ARCHIVO_MB * 1024 * 1024 * 4 // 3 + 4:
+        with lock:
+            sock = clientes.get(emisor)
+        if sock:
+            enviar(sock, {'tipo': 'server', 'contenido': f'Archivo rechazado: supera el límite de {MAX_ARCHIVO_MB} MB.'})
+        return
+
     os.makedirs(CARPETA_ARCHIVOS, exist_ok=True)
     ruta = os.path.join(CARPETA_ARCHIVOS, f'{emisor}_{nombre_archivo}')
     try:
@@ -184,10 +195,6 @@ def manejar_cliente(socket_cliente, direccion):
                     'destinatario': destinatario,
                     'contenido': contenido,
                     'hora': hora
-                })
-                enviar(socket_cliente, {
-                    'tipo': 'server',
-                    'contenido': f'Mensaje privado enviado a {destinatario}.'
                 })
 
             elif tipo == 'list':
