@@ -27,12 +27,13 @@ El servidor crea un hilo por cada cliente conectado para atenderlo de forma conc
 ```
 chat_sockets/
 ├── servidor/
-│   └── servidor_chat.py          # Servidor principal
+│   ├── servidor_chat.py          # Servidor principal
+│   ├── historial_chat.txt        # Generado automáticamente por el servidor
+│   └── archivos_recibidos/       # Copia de archivos enviados
 ├── cliente/
 │   ├── cliente_chat.py           # Lógica de red compartida
 │   ├── consola.py                # Cliente de terminal
 │   └── gui.py                    # Cliente gráfico con tkinter
-├── historial_chat.txt            # Generado automáticamente por el servidor
 └── README.md                     # Este archivo
 ```
 
@@ -41,8 +42,14 @@ chat_sockets/
 ## 3. Requisitos
 
 - Python 3.8 o superior.
-- Solo se usan librerías estándar: `socket`, `threading`, `tkinter`, `os`, `datetime`.
-- No requiere instalación de paquetes adicionales.
+- Librerías estándar utilizadas: `socket`, `threading`, `tkinter`, `os`, `datetime`, `json`, `base64`.
+- El cliente de consola usa **códigos ANSI** para colores. Funciona en Windows 10/11 (cmd y PowerShell), Linux y macOS.
+- El cliente gráfico usa `tkinter`.
+- **Opcional**: instalar `Pillow` si se desea ver miniaturas de imágenes en la GUI:
+  ```bash
+  pip install Pillow
+  ```
+  Si no está instalado, la GUI igual indica que se recibió una imagen pero no muestra la miniatura.
 
 ---
 
@@ -85,6 +92,8 @@ Te pedirá:
 
 Una vez dentro, escribe mensajes y presiona Enter para enviarlos a todos.
 
+La consola muestra mensajes con **colores** según su tipo: azul para los propios, amarillo para privados, verde para mensajes del servidor, etc. También emite un sonido al recibir mensajes o archivos de otros usuarios.
+
 ### 4.3. Cliente gráfico
 
 Ejecuta:
@@ -93,34 +102,57 @@ Ejecuta:
 python cliente/gui.py
 ```
 
-Aparecerá una ventana donde debes ingresar:
+Aparecerá una pantalla de login donde ingresas:
 
 - IP del servidor.
 - Puerto.
 - Nickname.
 
-Luego presiona **Conectar**. El área principal muestra el chat, la derecha la lista de usuarios, y en la parte inferior se escriben los mensajes.
+Luego presiona **Conectar**. El chat principal incluye:
+
+- Burbujas de mensajes con colores tipo Discord.
+- Lista de usuarios conectados con indicador en línea.
+- Doble clic en un usuario para enviarle un mensaje privado.
+- Indicador de "escribiendo...".
+- Envío de archivos con botón de clip (📎).
+- Preview de imágenes (si tienes Pillow instalado).
+- Búsqueda en el historial.
+- Cambio entre tema oscuro y claro.
+- Notificación sonora al recibir mensajes.
 
 ---
 
 ## 5. Comandos disponibles
 
-Ambos clientes (consola y gráfico) soportan las siguientes funciones:
+### Consola
 
-| Función | Comando consola | Descripción |
-|---|---|---|
-| Mensaje público | Escribir normalmente | Llega a todos los usuarios conectados. |
-| Mensaje privado | `/privado <usuario> <mensaje>` | Envía un mensaje solo al usuario indicado. |
-| Lista de usuarios | `/usuarios` | Muestra los nicknames conectados. |
-| Enviar archivo (público) | `/archivo <ruta>` | Envía un archivo a todos los usuarios. |
-| Enviar archivo (privado) | `/archivo <ruta> <usuario>` | Envía un archivo solo al usuario indicado. |
-| Salir | `/salir` o cerrar ventana | Desconecta al cliente del servidor. |
+| Función | Comando | Alias | Descripción |
+|---|---|---|---|
+| Mensaje público | Escribir normalmente | - | Llega a todos los usuarios conectados. |
+| Mensaje privado | `/privado <usuario> <mensaje>` | `/p` | Envía un mensaje solo al usuario indicado. |
+| Lista de usuarios | `/usuarios` | `/u` | Muestra los nicknames conectados. |
+| Enviar archivo | `/archivo <ruta> [usuario]` | `/a` | Envía un archivo a todos o a un usuario. |
+| Buscar en historial | `/buscar <texto>` | `/b` | Busca coincidencias en los mensajes de la sesión. |
+| Limpiar pantalla | `/limpiar` | `/clear` | Limpia los mensajes anteriores de la consola. |
+| Reconectar | `/reconectar` | `/r` | Intenta reconectar al servidor. |
+| Salir | `/salir` | `/s` | Desconecta al cliente del servidor. |
+| Ayuda | `/ayuda` | `/h` | Muestra la lista de comandos. |
 
-En la interfaz gráfica también puedes:
+### Interfaz gráfica
 
-- Seleccionar el destinatario en un menú desplegable (`Todos` o un usuario específico).
-- Presionar el botón **Adjuntar archivo** para enviar archivos.
-- Presionar **Enviar** o la tecla `Enter` para enviar mensajes.
+- Selecciona el destinatario en el menú desplegable (`Todos` o un usuario específico).
+- Presiona **Enviar** o la tecla `Enter` para enviar mensajes.
+- Presiona **📎 Adjuntar archivo** para enviar archivos.
+- Haz doble clic en un usuario de la lista para seleccionarlo como destinatario privado.
+- Presiona **Buscar** para buscar en el historial.
+- Presiona **Tema claro/oscuro** para cambiar el tema.
+
+Atajos de teclado en la GUI:
+
+- `Enter`: enviar mensaje.
+- `Escape`: desconectar / salir.
+- `Ctrl + T`: cambiar tema.
+- `Ctrl + L`: limpiar el área de chat.
 
 ---
 
@@ -135,6 +167,7 @@ El servidor y los clientes se comunican mediante mensajes con prefijos:
 | `PRIV:<usuario>:<mensaje>` | Mensaje privado. |
 | `LIST` | Solicitud de lista de usuarios. |
 | `FILE:<destinatario>:<nombre>:<bytes>` | Envío de archivo. |
+| `TYPING:<destinatario>` | Indicador de que el usuario está escribiendo. |
 | `EXIT` | Desconexión ordenada. |
 
 El servidor responde con:
@@ -145,6 +178,7 @@ El servidor responde con:
 | `LIST:<u1,u2,u3>` | Lista de usuarios conectados. |
 | `PRIV:<emisor>:<mensaje>` | Mensaje privado recibido. |
 | `FILE:<emisor>:<nombre>:<bytes>` | Archivo recibido. |
+| `TYPING:<emisor>:<destinatario>` | Notificación de que un usuario está escribiendo. |
 | `HIST:<linea>` | Línea del historial enviada al cliente que se conecta. |
 
 ---
@@ -173,10 +207,12 @@ Para probar el chat entre computadoras distintas:
 ## 8. Notas importantes
 
 - Los nicknames deben ser únicos. Si un usuario intenta usar uno repetido, el servidor le pedirá que elija otro.
-- Los archivos recibidos se guardan automáticamente en la carpeta `descargas/` dentro del directorio de cada cliente.
-- El historial de mensajes públicos se guarda en `historial_chat.txt` en la carpeta del servidor.
+- Los archivos recibidos por los clientes se guardan automáticamente en la carpeta `descargas/` (relativa al directorio desde donde se ejecute el cliente).
+- El servidor guarda una copia de los archivos enviados en `chat_sockets/servidor/archivos_recibidos/`.
+- El historial de mensajes públicos se guarda en `chat_sockets/servidor/historial_chat.txt`.
 - Los mensajes privados y archivos privados **no** se guardan en el historial público.
 - El servidor sigue funcionando aunque los clientes se desconecten; solo se cierra con `Ctrl + C`.
+- Si la consola no muestra colores en Windows, asegúrate de usar **cmd** o **PowerShell** moderno (Windows 10 o superior).
 
 ---
 
