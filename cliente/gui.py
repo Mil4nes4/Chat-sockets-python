@@ -22,25 +22,38 @@ except ImportError:
 
 TEMA_OSCURO = {
     'nombre': 'oscuro',
-    'fondo': '#36393f',
-    'panel': '#2f3136',
-    'entrada': '#40444b',
-    'texto': '#dcddde',
-    'texto_secundario': '#96989d',
+    'fondo': '#313338',
+    'panel': '#2b2d31',
+    'entrada': '#1e1f22',
+    'borde': '#4e5058',
+    'texto': '#f2f3f5',
+    'texto_secundario': '#c2c5cb',
     'acento': '#5865f2',
     'acento_hover': '#4752c4',
-    'propio': '#5865f2',
+    'propio': '#9aa3ff',
     'propio_fondo': '#404eed',
     'otros_fondo': '#40444b',
-    'privado': '#faa61a',
+    'privado': '#ffb454',
     'privado_fondo': '#4f442b',
-    'server': '#43b581',
+    'server': '#3ddc84',
     'server_fondo': '#2f4f3f',
-    'historial': '#72767d',
-    'archivo': '#ed4245',
-    'online': '#3ba55d',
+    'historial': '#9a9fa6',
+    'archivo': '#ff6b6e',
+    'online': '#3ddc84',
     'busqueda': '#fee75c'
 }
+
+MASCOTA_ASCII = (
+    "  █     █  \n"
+    "   █   █   \n"
+    "  ███████  \n"
+    " ██ ███ ██ \n"
+    "███████████\n"
+    "█ ███████ █\n"
+    "█ █     █ █\n"
+    "   █   █   "
+)
+
 
 def reproducir_beep():
     try:
@@ -65,6 +78,24 @@ def obtener_iniciales(nombre):
     return nombre[:2].upper()
 
 
+def configurar_estilo_ttk(tema):
+    style = ttk.Style()
+    style.theme_use('clam')
+    style.configure(
+        'TCombobox',
+        fieldbackground=tema['entrada'], background=tema['entrada'],
+        foreground=tema['texto'], arrowcolor=tema['texto'],
+        bordercolor=tema['borde'], lightcolor=tema['entrada'],
+        darkcolor=tema['entrada']
+    )
+    style.map(
+        'TCombobox',
+        fieldbackground=[('readonly', tema['entrada'])],
+        foreground=[('readonly', tema['texto'])],
+        background=[('readonly', tema['entrada'])]
+    )
+
+
 # PANTALLA DE LOGIN
 class LoginFrame(tk.Frame):
     def __init__(self, master, tema, on_conectar, **kwargs):
@@ -76,8 +107,19 @@ class LoginFrame(tk.Frame):
     def _construir(self):
         self.configure(bg=self.tema['fondo'])
 
-        frame_central = tk.Frame(self, bg=self.tema['panel'], padx=40, pady=40)
-        frame_central.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        frame_tarjeta = tk.Frame(self, bg=self.tema['fondo'])
+        frame_tarjeta.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        tk.Frame(frame_tarjeta, bg=self.tema['acento'], height=4).pack(fill=tk.X)
+
+        frame_central = tk.Frame(frame_tarjeta, bg=self.tema['panel'], padx=40, pady=32)
+        frame_central.pack()
+
+        tk.Label(
+            frame_central, text=MASCOTA_ASCII,
+            bg=self.tema['panel'], fg=self.tema['server'],
+            font=('Courier New', 11, 'bold'), justify=tk.CENTER
+        ).pack(pady=(0, 14))
 
         tk.Label(
             frame_central, text='Chat con Sockets',
@@ -102,7 +144,9 @@ class LoginFrame(tk.Frame):
                 frame_central, width=32,
                 bg=self.tema['entrada'], fg=self.tema['texto'],
                 insertbackground=self.tema['texto'],
-                font=('Segoe UI', 12), relief=tk.FLAT
+                font=('Segoe UI', 12), relief=tk.FLAT,
+                highlightthickness=1, highlightbackground=self.tema['borde'],
+                highlightcolor=self.tema['acento']
             )
             entry.insert(0, default)
             entry.pack(fill=tk.X, ipady=8, pady=(0, 5))
@@ -180,9 +224,9 @@ class ChatFrame(tk.Frame):
         self.label_titulo.pack(side=tk.LEFT, padx=15, pady=10)
 
         self.boton_buscar = tk.Button(
-            frame_superior, text='Buscar', bg=self.tema['entrada'],
+            frame_superior, text='🔍 Buscar', bg=self.tema['entrada'],
             fg=self.tema['texto'], relief=tk.FLAT, cursor='hand2',
-            font=('Segoe UI', 10), padx=10, pady=5,
+            font=('Segoe UI', 11), padx=16, pady=8,
             command=self._mostrar_busqueda
         )
         self.boton_buscar.pack(side=tk.RIGHT, padx=5)
@@ -190,16 +234,21 @@ class ChatFrame(tk.Frame):
         self.boton_desconectar = tk.Button(
             frame_superior, text='Desconectar', bg='#ed4245',
             fg='white', relief=tk.FLAT, cursor='hand2',
-            font=('Segoe UI', 10, 'bold'), padx=10, pady=5,
+            font=('Segoe UI', 11, 'bold'), padx=16, pady=8,
             command=self.on_desconectar
         )
         self.boton_desconectar.pack(side=tk.RIGHT, padx=15)
+
+        # Línea de acento decorativa bajo la barra superior
+        tk.Frame(self, bg=self.tema['acento'], height=2).pack(fill=tk.X)
 
         # Panel de búsqueda (oculto inicialmente)
         self.frame_busqueda = tk.Frame(self, bg=self.tema['fondo'])
         self.entry_busqueda = tk.Entry(
             self.frame_busqueda, bg=self.tema['entrada'], fg=self.tema['texto'],
-            insertbackground=self.tema['texto'], font=('Segoe UI', 10)
+            insertbackground=self.tema['texto'], font=('Segoe UI', 10),
+            relief=tk.FLAT, highlightthickness=1,
+            highlightbackground=self.tema['borde'], highlightcolor=self.tema['acento']
         )
         self.entry_busqueda.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
         self.entry_busqueda.bind('<KeyRelease>', lambda e: self._buscar())
@@ -210,11 +259,33 @@ class ChatFrame(tk.Frame):
         ).pack(side=tk.RIGHT, padx=5)
 
         # Área central: chat + usuarios
-        frame_central = tk.Frame(self, bg=self.tema['fondo'])
-        frame_central.pack(fill=tk.BOTH, expand=True)
+        self.frame_central = tk.Frame(self, bg=self.tema['fondo'])
+        self.frame_central.pack(fill=tk.BOTH, expand=True)
+
+        # Panel de usuarios (se crea antes que el área de chat para que Tk
+        # no corrompa el primer carácter del título al dibujarlo después
+        # del widget Text con scrollbar)
+        frame_usuarios = tk.Frame(self.frame_central, bg=self.tema['panel'], width=225)
+        frame_usuarios.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 10), pady=10)
+        frame_usuarios.pack_propagate(False)
+
+        tk.Label(
+            frame_usuarios, text='USUARIOS EN LÍNEA',
+            bg=self.tema['panel'], fg=self.tema['texto_secundario'],
+            font=('Segoe UI', 10, 'bold')
+        ).pack(anchor='w', padx=12, pady=(15, 5))
+
+        self.lista_usuarios = tk.Listbox(
+            frame_usuarios, bg=self.tema['panel'], fg=self.tema['texto'],
+            selectbackground=self.tema['acento'], selectforeground='white',
+            font=('Segoe UI', 12),
+            highlightthickness=0, borderwidth=0, relief=tk.FLAT
+        )
+        self.lista_usuarios.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.lista_usuarios.bind('<Double-Button-1>', self._seleccionar_usuario)
 
         # Área de chat
-        frame_chat = tk.Frame(frame_central, bg=self.tema['fondo'])
+        frame_chat = tk.Frame(self.frame_central, bg=self.tema['fondo'])
         frame_chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         self.area_chat = tk.Text(
@@ -222,32 +293,14 @@ class ChatFrame(tk.Frame):
             bg=self.tema['fondo'], fg=self.tema['texto'],
             font=('Segoe UI', 11), padx=10, pady=10,
             spacing1=2, spacing3=2, relief=tk.FLAT,
-            highlightthickness=0, borderwidth=0
+            highlightthickness=1, highlightbackground=self.tema['borde'],
+            highlightcolor=self.tema['borde'], borderwidth=0
         )
         self.area_chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         scrollbar = tk.Scrollbar(frame_chat, command=self.area_chat.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.area_chat.config(yscrollcommand=scrollbar.set)
-
-        # Panel de usuarios
-        frame_usuarios = tk.Frame(frame_central, bg=self.tema['panel'], width=200)
-        frame_usuarios.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 10), pady=10)
-        frame_usuarios.pack_propagate(False)
-
-        tk.Label(
-            frame_usuarios, text='USUARIOS EN LÍNEA',
-            bg=self.tema['panel'], fg=self.tema['texto_secundario'],
-            font=('Segoe UI', 11, 'bold')
-        ).pack(anchor='w', padx=15, pady=(15, 5))
-
-        self.lista_usuarios = tk.Listbox(
-            frame_usuarios, bg=self.tema['panel'], fg=self.tema['texto'],
-            selectbackground=self.tema['acento'], font=('Segoe UI', 12),
-            highlightthickness=0, borderwidth=0, relief=tk.FLAT
-        )
-        self.lista_usuarios.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        self.lista_usuarios.bind('<Double-Button-1>', self._seleccionar_usuario)
 
         # Indicador de escribiendo
         self.label_typing = tk.Label(
@@ -263,7 +316,8 @@ class ChatFrame(tk.Frame):
         self.entry_mensaje = tk.Entry(
             frame_inferior, bg=self.tema['entrada'], fg=self.tema['texto'],
             insertbackground=self.tema['texto'], font=('Segoe UI', 12),
-            relief=tk.FLAT
+            relief=tk.FLAT, highlightthickness=1,
+            highlightbackground=self.tema['borde'], highlightcolor=self.tema['acento']
         )
         self.entry_mensaje.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10), ipady=10)
         self.entry_mensaje.bind('<Return>', lambda e: self._enviar_mensaje())
@@ -313,7 +367,7 @@ class ChatFrame(tk.Frame):
         self.area_chat.tag_config('busqueda', background=t['busqueda'], foreground='black')
 
     def _mostrar_busqueda(self):
-        self.frame_busqueda.pack(fill=tk.X, before=self.winfo_children()[1])
+        self.frame_busqueda.pack(fill=tk.X, before=self.frame_central)
         self.entry_busqueda.focus()
 
     def _ocultar_busqueda(self):
@@ -478,9 +532,10 @@ class ChatFrame(tk.Frame):
     def _actualizar_usuarios(self, usuarios):
         self.lista_usuarios.delete(0, tk.END)
         valores = ['Todos']
-        for u in usuarios:
+        for i, u in enumerate(usuarios):
             simbolo = '●' if u != self.nickname else '● (tú)'
             self.lista_usuarios.insert(tk.END, f'{simbolo} {u}')
+            self.lista_usuarios.itemconfig(i, fg=self.tema['online'])
             if u != self.nickname:
                 valores.append(u)
         self.combo_destinatario['values'] = valores
@@ -559,6 +614,12 @@ class ChatGUI:
         self.nickname = ''
         self.conectado = False
         self.hilo_escucha = None
+
+        configurar_estilo_ttk(self.tema)
+        self.root.option_add('*TCombobox*Listbox.background', self.tema['entrada'])
+        self.root.option_add('*TCombobox*Listbox.foreground', self.tema['texto'])
+        self.root.option_add('*TCombobox*Listbox.selectBackground', self.tema['acento'])
+        self.root.option_add('*TCombobox*Listbox.selectForeground', 'white')
 
         self.login_frame = LoginFrame(
             self.root, self.tema, self._conectar

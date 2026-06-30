@@ -10,7 +10,7 @@ El sistema sigue un modelo **cliente-servidor** basado en sockets TCP:
 
 - **Servidor (`servidor_chat.py`)**: centraliza las conexiones, administra los usuarios conectados, reenvía mensajes, gestiona mensajes privados, archivos y guarda el historial.
 - **Cliente de consola (`consola.py`)**: interfaz textual para conectarse al chat.
-- **Cliente gráfico (`gui.py`)**: interfaz visual con `tkinter`, estilo simple tipo Discord.
+- **Cliente gráfico (`gui.py`)**: interfaz visual con `tkinter`, estilo simple.
 - **Módulo compartido (`cliente_chat.py`)**: funciones de red usadas por ambos clientes.
 
 Cada cliente mantiene dos hilos:
@@ -110,7 +110,7 @@ Aparecerá una pantalla de login donde ingresas:
 
 Luego presiona **Conectar**. El chat principal incluye:
 
-- Burbujas de mensajes con colores tipo Discord.
+- Burbujas de mensajes con colores.
 - Lista de usuarios conectados con indicador en línea.
 - Doble clic en un usuario para enviarle un mensaje privado.
 - Indicador de "escribiendo...".
