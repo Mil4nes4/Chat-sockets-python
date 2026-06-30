@@ -42,29 +42,6 @@ TEMA_OSCURO = {
     'busqueda': '#fee75c'
 }
 
-TEMA_CLARO = {
-    'nombre': 'claro',
-    'fondo': '#ffffff',
-    'panel': '#f2f3f5',
-    'entrada': '#ebedef',
-    'texto': '#2e3338',
-    'texto_secundario': '#747f8d',
-    'acento': '#5865f2',
-    'acento_hover': '#4752c4',
-    'propio': '#ffffff',
-    'propio_fondo': '#5865f2',
-    'otros_fondo': '#ebedef',
-    'privado': '#f26522',
-    'privado_fondo': '#fff4e6',
-    'server': '#3ba55d',
-    'server_fondo': '#e6f5ea',
-    'historial': '#747f8d',
-    'archivo': '#ed4245',
-    'online': '#3ba55d',
-    'busqueda': '#fee75c'
-}
-
-
 def reproducir_beep():
     try:
         if sys.platform == 'win32':
@@ -105,8 +82,8 @@ class LoginFrame(tk.Frame):
         tk.Label(
             frame_central, text='Chat con Sockets',
             bg=self.tema['panel'], fg=self.tema['texto'],
-            font=('Segoe UI', 20, 'bold')
-        ).pack(pady=(0, 20))
+            font=('Segoe UI', 24, 'bold')
+        ).pack(pady=(0, 24))
 
         campos = [
             ('IP del servidor', '127.0.0.1', 'entry_ip'),
@@ -119,16 +96,16 @@ class LoginFrame(tk.Frame):
             tk.Label(
                 frame_central, text=label,
                 bg=self.tema['panel'], fg=self.tema['texto_secundario'],
-                font=('Segoe UI', 10), anchor='w'
-            ).pack(fill=tk.X, pady=(10, 2))
+                font=('Segoe UI', 11), anchor='w'
+            ).pack(fill=tk.X, pady=(12, 3))
             entry = tk.Entry(
-                frame_central, width=30,
+                frame_central, width=32,
                 bg=self.tema['entrada'], fg=self.tema['texto'],
                 insertbackground=self.tema['texto'],
-                font=('Segoe UI', 11), relief=tk.FLAT
+                font=('Segoe UI', 12), relief=tk.FLAT
             )
             entry.insert(0, default)
-            entry.pack(fill=tk.X, ipady=5, pady=(0, 5))
+            entry.pack(fill=tk.X, ipady=8, pady=(0, 5))
             self.entries[attr] = entry
 
         self.entries['entry_nick'].focus()
@@ -137,14 +114,14 @@ class LoginFrame(tk.Frame):
             frame_central, text='Conectar al chat',
             bg=self.tema['acento'], fg='white',
             activebackground=self.tema['acento_hover'],
-            font=('Segoe UI', 11, 'bold'), relief=tk.FLAT,
+            font=('Segoe UI', 12, 'bold'), relief=tk.FLAT,
             command=self._intentar_conectar, cursor='hand2'
         )
-        self.boton_conectar.pack(fill=tk.X, pady=(20, 0), ipady=8)
+        self.boton_conectar.pack(fill=tk.X, pady=(24, 0), ipady=12)
 
         self.label_error = tk.Label(
             frame_central, text='', fg='#ed4245',
-            bg=self.tema['panel'], font=('Segoe UI', 9)
+            bg=self.tema['panel'], font=('Segoe UI', 10)
         )
         self.label_error.pack(pady=(10, 0))
 
@@ -198,20 +175,14 @@ class ChatFrame(tk.Frame):
         self.label_titulo = tk.Label(
             frame_superior, text='Chat con Sockets',
             bg=self.tema['panel'], fg=self.tema['texto'],
-            font=('Segoe UI', 12, 'bold')
+            font=('Segoe UI', 13, 'bold')
         )
         self.label_titulo.pack(side=tk.LEFT, padx=15, pady=10)
-
-        self.boton_tema = tk.Button(
-            frame_superior, text='Tema claro', bg=self.tema['entrada'],
-            fg=self.tema['texto'], relief=tk.FLAT, cursor='hand2',
-            command=lambda: self._cambiar_tema()
-        )
-        self.boton_tema.pack(side=tk.RIGHT, padx=5)
 
         self.boton_buscar = tk.Button(
             frame_superior, text='Buscar', bg=self.tema['entrada'],
             fg=self.tema['texto'], relief=tk.FLAT, cursor='hand2',
+            font=('Segoe UI', 10), padx=10, pady=5,
             command=self._mostrar_busqueda
         )
         self.boton_buscar.pack(side=tk.RIGHT, padx=5)
@@ -219,6 +190,7 @@ class ChatFrame(tk.Frame):
         self.boton_desconectar = tk.Button(
             frame_superior, text='Desconectar', bg='#ed4245',
             fg='white', relief=tk.FLAT, cursor='hand2',
+            font=('Segoe UI', 10, 'bold'), padx=10, pady=5,
             command=self.on_desconectar
         )
         self.boton_desconectar.pack(side=tk.RIGHT, padx=15)
@@ -266,12 +238,12 @@ class ChatFrame(tk.Frame):
         tk.Label(
             frame_usuarios, text='USUARIOS EN LÍNEA',
             bg=self.tema['panel'], fg=self.tema['texto_secundario'],
-            font=('Segoe UI', 10, 'bold')
+            font=('Segoe UI', 11, 'bold')
         ).pack(anchor='w', padx=15, pady=(15, 5))
 
         self.lista_usuarios = tk.Listbox(
             frame_usuarios, bg=self.tema['panel'], fg=self.tema['texto'],
-            selectbackground=self.tema['acento'], font=('Segoe UI', 11),
+            selectbackground=self.tema['acento'], font=('Segoe UI', 12),
             highlightthickness=0, borderwidth=0, relief=tk.FLAT
         )
         self.lista_usuarios.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -280,7 +252,7 @@ class ChatFrame(tk.Frame):
         # Indicador de escribiendo
         self.label_typing = tk.Label(
             self, text='', bg=self.tema['fondo'], fg=self.tema['texto_secundario'],
-            font=('Segoe UI', 9, 'italic'), anchor='w'
+            font=('Segoe UI', 10, 'italic'), anchor='w'
         )
         self.label_typing.pack(fill=tk.X, padx=15)
 
@@ -290,21 +262,21 @@ class ChatFrame(tk.Frame):
 
         self.entry_mensaje = tk.Entry(
             frame_inferior, bg=self.tema['entrada'], fg=self.tema['texto'],
-            insertbackground=self.tema['texto'], font=('Segoe UI', 11),
+            insertbackground=self.tema['texto'], font=('Segoe UI', 12),
             relief=tk.FLAT
         )
-        self.entry_mensaje.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10), ipady=8)
+        self.entry_mensaje.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10), ipady=10)
         self.entry_mensaje.bind('<Return>', lambda e: self._enviar_mensaje())
         self.entry_mensaje.bind('<KeyRelease>', self._on_typing)
 
         tk.Label(
             frame_inferior, text='Para:', bg=self.tema['panel'],
-            fg=self.tema['texto_secundario'], font=('Segoe UI', 10)
+            fg=self.tema['texto_secundario'], font=('Segoe UI', 11)
         ).pack(side=tk.LEFT)
 
         self.combo_destinatario = ttk.Combobox(
             frame_inferior, values=['Todos'], state='readonly', width=14,
-            font=('Segoe UI', 10)
+            font=('Segoe UI', 11)
         )
         self.combo_destinatario.set('Todos')
         self.combo_destinatario.pack(side=tk.LEFT, padx=5)
@@ -312,35 +284,33 @@ class ChatFrame(tk.Frame):
         self.boton_archivo = tk.Button(
             frame_inferior, text='📎', bg=self.tema['entrada'],
             fg=self.tema['texto'], relief=tk.FLAT, cursor='hand2',
-            font=('Segoe UI', 12), command=self._enviar_archivo
+            font=('Segoe UI', 14), padx=6, pady=4,
+            command=self._enviar_archivo
         )
         self.boton_archivo.pack(side=tk.LEFT, padx=5)
 
         self.boton_enviar = tk.Button(
             frame_inferior, text='Enviar', bg=self.tema['acento'], fg='white',
             activebackground=self.tema['acento_hover'], relief=tk.FLAT,
-            font=('Segoe UI', 10, 'bold'), cursor='hand2',
+            font=('Segoe UI', 11, 'bold'), cursor='hand2',
             command=self._enviar_mensaje
         )
-        self.boton_enviar.pack(side=tk.LEFT, padx=5, ipady=4, ipadx=10)
+        self.boton_enviar.pack(side=tk.LEFT, padx=5, ipady=6, ipadx=14)
 
         self._configurar_tags()
 
     def _configurar_tags(self):
         t = self.tema
-        self.area_chat.tag_config('hora', foreground=t['texto_secundario'], font=('Segoe UI', 9))
-        self.area_chat.tag_config('nombre', foreground=t['texto'], font=('Segoe UI', 10, 'bold'))
-        self.area_chat.tag_config('propio_nombre', foreground=t['propio'], font=('Segoe UI', 10, 'bold'))
-        self.area_chat.tag_config('propio_texto', foreground=t['propio'], font=('Segoe UI', 11))
-        self.area_chat.tag_config('otro_texto', foreground=t['texto'], font=('Segoe UI', 11))
-        self.area_chat.tag_config('privado_texto', foreground=t['privado'], font=('Segoe UI', 11))
-        self.area_chat.tag_config('server_texto', foreground=t['server'], font=('Segoe UI', 11))
-        self.area_chat.tag_config('historial_texto', foreground=t['historial'], font=('Segoe UI', 10, 'italic'))
-        self.area_chat.tag_config('archivo_texto', foreground=t['archivo'], font=('Segoe UI', 11))
+        self.area_chat.tag_config('hora', foreground=t['texto_secundario'], font=('Segoe UI', 10))
+        self.area_chat.tag_config('nombre', foreground=t['texto'], font=('Segoe UI', 12, 'bold'))
+        self.area_chat.tag_config('propio_nombre', foreground=t['propio'], font=('Segoe UI', 12, 'bold'))
+        self.area_chat.tag_config('propio_texto', foreground=t['propio'], font=('Segoe UI', 12))
+        self.area_chat.tag_config('otro_texto', foreground=t['texto'], font=('Segoe UI', 12))
+        self.area_chat.tag_config('privado_texto', foreground=t['privado'], font=('Segoe UI', 12))
+        self.area_chat.tag_config('server_texto', foreground=t['server'], font=('Segoe UI', 12))
+        self.area_chat.tag_config('historial_texto', foreground=t['historial'], font=('Segoe UI', 11, 'italic'))
+        self.area_chat.tag_config('archivo_texto', foreground=t['archivo'], font=('Segoe UI', 12))
         self.area_chat.tag_config('busqueda', background=t['busqueda'], foreground='black')
-
-    def _cambiar_tema(self):
-        pass
 
     def _mostrar_busqueda(self):
         self.frame_busqueda.pack(fill=tk.X, before=self.winfo_children()[1])
@@ -581,8 +551,8 @@ class ChatGUI:
     def __init__(self, root):
         self.root = root
         self.root.title('Chat con Sockets')
-        self.root.geometry('950x650')
-        self.root.minsize(800, 500)
+        self.root.geometry('1050x700')
+        self.root.minsize(850, 550)
 
         self.tema = TEMA_OSCURO
         self.sock = None
@@ -599,7 +569,6 @@ class ChatGUI:
 
         self.root.protocol('WM_DELETE_WINDOW', self._salir)
         self.root.bind('<Escape>', lambda e: self._salir())
-        self.root.bind('<Control-t>', lambda e: self._cambiar_tema())
         self.root.bind('<Control-l>', lambda e: self._limpiar_chat())
 
     def _limpiar_chat(self):
@@ -607,11 +576,6 @@ class ChatGUI:
             self.chat_frame.area_chat.config(state=tk.NORMAL)
             self.chat_frame.area_chat.delete('1.0', tk.END)
             self.chat_frame.area_chat.config(state=tk.DISABLED)
-
-    def _aplicar_tema(self, tema):
-        self.tema = tema
-        self.root.configure(bg=tema['fondo'])
-        # El tema se aplica recreando frames, por simplicidad
 
     def _conectar(self, ip, puerto, nickname):
         try:
@@ -640,7 +604,6 @@ class ChatGUI:
         self.chat_frame.sock = self.sock
         self.chat_frame.nickname = nickname
         self.chat_frame.conectado = True
-        self.chat_frame._cambiar_tema = self._cambiar_tema
         self.chat_frame.pack(fill=tk.BOTH, expand=True)
 
         if respuesta:
@@ -663,36 +626,6 @@ class ChatGUI:
             self.chat_frame = None
         self.login_frame = LoginFrame(self.root, self.tema, self._conectar)
         self.login_frame.pack(fill=tk.BOTH, expand=True)
-
-    def _cambiar_tema(self):
-        nuevo_tema = TEMA_CLARO if self.tema['nombre'] == 'oscuro' else TEMA_OSCURO
-        self.tema = nuevo_tema
-
-        old_frame = self.chat_frame
-        if old_frame:
-            old_frame.conectado = False  # señal al hilo viejo para que salga
-            old_frame.pack_forget()
-        if self.login_frame:
-            self.login_frame.pack_forget()
-
-        if self.conectado and old_frame:
-            self.chat_frame = ChatFrame(self.root, self.tema, self._desconectar)
-            self.chat_frame.sock = self.sock
-            self.chat_frame.nickname = self.nickname
-            self.chat_frame.conectado = True
-            self.chat_frame._cambiar_tema = self._cambiar_tema
-            self.chat_frame.pack(fill=tk.BOTH, expand=True)
-            self.chat_frame._manejar_mensaje({
-                'tipo': 'server', 'contenido': 'Tema cambiado.'
-            })
-            self.hilo_escucha = threading.Thread(
-                target=self.chat_frame._escuchar, daemon=True
-            )
-            self.hilo_escucha.start()
-        else:
-            self.chat_frame = None
-            self.login_frame = LoginFrame(self.root, self.tema, self._conectar)
-            self.login_frame.pack(fill=tk.BOTH, expand=True)
 
     def _salir(self):
         if self.conectado and self.sock:

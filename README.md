@@ -117,7 +117,6 @@ Luego presiona **Conectar**. El chat principal incluye:
 - Envío de archivos con botón de clip (📎).
 - Preview de imágenes (si tienes Pillow instalado).
 - Búsqueda en el historial.
-- Cambio entre tema oscuro y claro.
 - Notificación sonora al recibir mensajes.
 
 ---
@@ -145,13 +144,11 @@ Luego presiona **Conectar**. El chat principal incluye:
 - Presiona **📎 Adjuntar archivo** para enviar archivos.
 - Haz doble clic en un usuario de la lista para seleccionarlo como destinatario privado.
 - Presiona **Buscar** para buscar en el historial.
-- Presiona **Tema claro/oscuro** para cambiar el tema.
 
 Atajos de teclado en la GUI:
 
 - `Enter`: enviar mensaje.
 - `Escape`: desconectar / salir.
-- `Ctrl + T`: cambiar tema.
 - `Ctrl + L`: limpiar el área de chat.
 
 ---
