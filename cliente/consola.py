@@ -36,11 +36,7 @@ def _asegurar_utf8():
 _habilitar_colores_windows()
 _asegurar_utf8()
 
-# Evita que el hilo que escucha al servidor reimprima el prompt "> " en
-# medio de un bloque de varias líneas (p. ej. la ayuda) impreso por el
-# hilo principal.
 LOCK_IMPRESION = threading.RLock()
-
 
 class Color:
     RESET = '\033[0m'
@@ -62,9 +58,6 @@ def color(texto, codigo):
     return f'{codigo}{texto}{Color.RESET}'
 
 
-# Colores de intensidad normal (no los "brillantes" de Color), usados solo
-# para distinguir nicknames de otros usuarios sin chocar con los colores
-# que ya tienen un significado fijo (azul=propio, amarillo=privado, etc.)
 PALETA_USUARIOS = ['\033[34m', '\033[32m', '\033[33m', '\033[35m', '\033[36m', '\033[31m']
 
 
