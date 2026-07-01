@@ -326,8 +326,14 @@ class ChatFrame(tk.Frame):
         ).pack(side=tk.RIGHT, padx=5)
 
         # Área central: chat + usuarios
+        # Nota: el pack() de este frame se hace al final de _construir(),
+        # después de empaquetar toda la barra inferior/estado/typing.
+        # Así esos elementos de tamaño fijo reservan su espacio primero y
+        # solo el área de chat se encoge si la ventana queda chica
+        # (si no, el pack de Tk reparte el espacio en orden de llamada y
+        # el frame con expand=True se queda con todo, empujando la barra
+        # de envío fuera de la ventana visible).
         self.frame_central = tk.Frame(self, bg=self.tema['fondo'])
-        self.frame_central.pack(fill=tk.BOTH, expand=True)
 
         # Panel de usuarios (se crea antes que el área de chat para que Tk
         # no corrompa el primer carácter del título al dibujarlo después
@@ -374,12 +380,15 @@ class ChatFrame(tk.Frame):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.area_chat.config(yscrollcommand=scrollbar.set)
 
-        # Indicador de escribiendo
+        # El label de "escribiendo..." se crea aquí (para tener la
+        # referencia disponible) pero se empaqueta más abajo, después de
+        # toda la barra inferior, para que quede pegado justo encima de
+        # ella en la pila de widgets "bottom" (ver comentario junto al
+        # pack final de frame_central).
         self.label_typing = tk.Label(
             self, text='', bg=self.tema['fondo'], fg=self.tema['texto_secundario'],
             font=('Segoe UI', 10, 'italic'), anchor='w'
         )
-        self.label_typing.pack(fill=tk.X, padx=15)
 
         # Barra de estado de conexión
         frame_estado = tk.Frame(self, bg=self.tema['panel'])
@@ -442,6 +451,20 @@ class ChatFrame(tk.Frame):
             font=('Segoe UI', 11, 'bold')
         )
         self.boton_enviar.pack(side=tk.LEFT, padx=5)
+
+        # El typing se empaqueta ahora, como último elemento del lado
+        # "bottom", para que quede justo encima de la barra inferior.
+        self.label_typing.pack(fill=tk.X, padx=15, side=tk.BOTTOM)
+
+        # Recién ahora se empaqueta el área central (chat + usuarios), al
+        # final de todo, para que la barra inferior y el resto del
+        # "chrome" fijo ya tengan su espacio reservado en la ventana. Si
+        # se empaqueta antes (como estaba originalmente), Tk le da su
+        # tamaño natural de una vez y los widgets empaquetados después
+        # pueden quedarse sin espacio y no mostrarse cuando la ventana es
+        # más chica que el tamaño "ideal" (ver bug de los botones
+        # inferiores invisibles).
+        self.frame_central.pack(fill=tk.BOTH, expand=True)
 
         self._configurar_tags()
         self._mostrar_marca_agua()

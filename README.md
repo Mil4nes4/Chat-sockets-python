@@ -192,12 +192,22 @@ Para probar el chat entre computadoras distintas:
 
 3. En el cliente, usa la **IP local del servidor** si ambas computadoras están en la misma red WiFi/Ethernet (por ejemplo, `192.168.1.10`).
 
-4. Si las computadoras están en redes diferentes (por ejemplo, cada uno en su casa):
-   - Necesitas la **IP pública** del servidor.
-   - En el router del servidor debes configurar **redirección de puertos** (port forwarding) del puerto `5000` hacia la IP local del servidor.
-   - También puedes usar una VPN como Tailscale o Hamachi si no quieres configurar el router.
+4. Si las computadoras están en redes diferentes (por ejemplo, cada uno en su casa), hay varias formas de lograrlo. Las dos que se usaron para probar este proyecto:
 
-5. Verifica que el firewall del servidor permita conexiones entrantes por el puerto `5000`.
+   **Opción A — Túnel con ngrok** (no requiere que quien se conecta instale nada):
+   ```bash
+   $env:NGROK_TOKEN = "tu_token_aqui"
+   .\scripts\setup_ngrok.ps1
+   ```
+   Esto levanta un túnel TCP hacia el puerto `5000` local y muestra una dirección pública (ej. `0.tcp.sa.ngrok.io:27660`) que cambia cada vez que se reinicia el túnel — hay que pasarle la dirección actualizada a quien se conecte.
+
+   **Opción B — Servidor en una VM de la nube (Google Cloud, tier gratuito)**: se despliega el mismo `servidor_chat.py` en una instancia `e2-micro` con IP pública fija, corriendo dentro de una sesión de `tmux` para que quede persistente. Ventaja sobre ngrok: la IP no cambia entre reinicios del servidor.
+
+   También es válido el método clásico de **redirección de puertos (port forwarding)** en el router hacia el puerto `5000`, o una VPN de malla como Tailscale/Hamachi (aunque esta última requiere que ambos extremos instalen el cliente de la VPN).
+
+5. Verifica que el firewall del servidor (y el de red, en el caso de la nube) permita conexiones entrantes por el puerto usado.
+
+6. **Nota sobre redes restrictivas (universitarias/corporativas):** algunas redes bloquean puertos de salida no estándar. Si la conexión falla solo en ese tipo de redes (pero funciona en redes domésticas normales), el plan B es correr el servidor en el puerto `443` en vez del `5000` en la VM de la nube — la mayoría de firewalls permiten salida por ese puerto al ser el de HTTPS. Requiere dar permiso a Python para usar puertos privilegiados: `sudo setcap 'cap_net_bind_service=+ep' $(which python3)`.
 
 ---
 

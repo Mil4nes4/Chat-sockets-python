@@ -1,0 +1,11 @@
+# Cache de Python
+__pycache__/
+*.pyc
+
+# Generado en tiempo de ejecucion por el servidor
+servidor/historial_chat.txt
+servidor/archivos_recibidos/
+
+# Generado en tiempo de ejecucion por los clientes
+descargas/
+cliente/descargas/
