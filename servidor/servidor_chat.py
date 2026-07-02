@@ -6,7 +6,7 @@ import base64
 from datetime import datetime
 
 HOST = '0.0.0.0'
-PUERTO = 5000
+PUERTO = int(os.environ.get('CHAT_PUERTO', 5000))
 MAX_ARCHIVO_MB = 50
 
 # Rutas relativas a la ubicación de este archivo
@@ -134,6 +134,24 @@ def obtener_hora():
     return datetime.now().strftime('%H:%M:%S')
 
 
+def activar_keepalive(socket_cliente):
+    # Sin esto, si un cliente se va sin cerrar el socket bien (crash,
+    # se corta la red, el túnel/VM lo tira) el hilo del servidor se queda
+    # bloqueado para siempre en recv() y el usuario queda "fantasma"
+    # conectado. Con keepalive, el sistema operativo manda pings al
+    # cliente y si no responde, recv() falla solo y el finally de
+    # manejar_cliente limpia el usuario como en cualquier desconexión.
+    socket_cliente.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    try:
+        socket_cliente.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+        socket_cliente.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+        socket_cliente.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+    except (AttributeError, OSError):
+        # TCP_KEEPIDLE/INTVL/CNT no existen en todos los sistemas
+        # (p. ej. Windows viejo); SO_KEEPALIVE ya quedó activado igual.
+        pass
+
+
 def manejar_cliente(socket_cliente, direccion):
     nickname = None
     try:
@@ -257,6 +275,7 @@ def main():
     try:
         while True:
             socket_cliente, direccion = servidor.accept()
+            activar_keepalive(socket_cliente)
             hilo = threading.Thread(
                 target=manejar_cliente,
                 args=(socket_cliente, direccion),
