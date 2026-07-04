@@ -70,9 +70,8 @@ def reproducir_beep():
     try:
         if sys.platform == 'win32':
             import winsound
-            winsound.MessageBeep()
-        else:
-            print('\a', end='')
+            winsound.PlaySound(r'C:\Windows\Media\Windows Pop-up Blocked.wav',
+                                winsound.SND_FILENAME | winsound.SND_ASYNC)
     except Exception:
         pass
 
