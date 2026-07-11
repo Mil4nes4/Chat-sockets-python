@@ -149,7 +149,7 @@ def imprimir_ayuda():
         print(f'{margen}  {color("/usuarios", Color.AMARILLO)}                    Ver usuarios conectados  ({color("/u", Color.AMARILLO)})')
         print(f'{margen}  {color("/archivo", Color.AMARILLO)} <ruta> [usuario]    Enviar archivo             ({color("/a", Color.AMARILLO)})')
         print(f'{margen}  {color("/buscar", Color.AMARILLO)} <texto>              Buscar en el historial     ({color("/b", Color.AMARILLO)})')
-        print(f'{margen}  {color("/emoji", Color.AMARILLO)}                       Enviar mensaje con emoji   ({color("/e", Color.AMARILLO)})')
+        print(f'{margen}  {color("/emoji", Color.AMARILLO)} [número] [texto]      Enviar mensaje con emoji   ({color("/e", Color.AMARILLO)})')
         print(f'{margen}  {color("/limpiar", Color.AMARILLO)}                     Limpiar pantalla           ({color("/clear", Color.AMARILLO)})')
         print(f'{margen}  {color("/reconectar", Color.AMARILLO)}                  Intentar reconectar        ({color("/r", Color.AMARILLO)})')
         print(f'{margen}  {color("/salir", Color.AMARILLO)}                       Desconectarse              ({color("/s", Color.AMARILLO)})')
@@ -279,8 +279,11 @@ class ClienteConsola:
         elif tipo == 'priv':
             emisor = mensaje.get('emisor')
             contenido = mensaje.get('contenido')
-            linea = f'🔒 {color("[PRIVADO", Color.AMARILLO)} {color("de", Color.AMARILLO)} {color(emisor, Color.BOLD)}{color("]", Color.AMARILLO)} {color(hora, Color.GRIS)}: {color(contenido, Color.AMARILLO)}'
-            if emisor != self.nickname:
+            if emisor == self.nickname:
+                destinatario = mensaje.get('destinatario')
+                linea = f'🔒 {color("[PRIVADO para", Color.AMARILLO)} {color(destinatario, Color.BOLD)}{color("]", Color.AMARILLO)} {color(hora, Color.GRIS)}: {color(contenido, Color.AMARILLO)}'
+            else:
+                linea = f'🔒 {color("[PRIVADO", Color.AMARILLO)} {color("de", Color.AMARILLO)} {color(emisor, Color.BOLD)}{color("]", Color.AMARILLO)} {color(hora, Color.GRIS)}: {color(contenido, Color.AMARILLO)}'
                 reproducir_beep()
 
         elif tipo == 'server':
@@ -358,9 +361,6 @@ class ClienteConsola:
                 print(color('Uso: /privado <usuario> <mensaje>', Color.ROJO))
                 return
             enviar_mensaje_privado(self.sock, partes[1], partes[2])
-            linea = f'{color("[PRIVADO para", Color.AMARILLO)} {color(partes[1], Color.BOLD)}{color("]", Color.AMARILLO)} {color(time.strftime("%H:%M:%S"), Color.GRIS)}: {color(partes[2], Color.AMARILLO)}'
-            self.historial.append(linea)
-            print(linea)
 
         elif entrada in ('/usuarios', '/u'):
             solicitar_lista(self.sock)
@@ -395,6 +395,18 @@ class ClienteConsola:
 
         elif entrada in ('/emoji', '/e'):
             self._enviar_con_emoji()
+
+        elif entrada.startswith('/emoji ') or entrada.startswith('/e '):
+            partes = entrada.split(' ', 2)
+            try:
+                indice = int(partes[1]) - 1
+                emoji = EMOJIS_COMUNES[indice]
+            except (ValueError, IndexError):
+                print(color(f'Uso: /emoji <número> [texto]  (número del 1 al {len(EMOJIS_COMUNES)} — usá /emoji para ver la lista)', Color.ROJO))
+                return
+            texto = partes[2] if len(partes) == 3 else ''
+            mensaje = f'{emoji} {texto}'.strip() if texto else emoji
+            enviar_mensaje_publico(self.sock, mensaje)
 
         elif entrada in ('/limpiar', '/clear'):
             self._limpiar()

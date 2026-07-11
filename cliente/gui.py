@@ -1,3 +1,4 @@
+import math
 import os
 import queue
 import sys
@@ -82,6 +83,71 @@ def color_usuario(nickname):
     indice = sum(ord(c) for c in nickname) % len(PALETA_USUARIOS)
     return PALETA_USUARIOS[indice]
 
+AVATARES_DISPONIBLES = [
+    'circulo', 'anillo', 'cuadrado', 'diamante', 'rayas', 'estrella',
+    'triangulo', 'cruz', 'luna', 'corazon', 'reloj_arena', 'hexagono'
+]
+
+
+def _es_pixel_avatar(patron, dx, dy, radio):
+    dist = math.sqrt(dx * dx + dy * dy)
+    if patron == 'anillo':
+        return radio - 3 <= dist <= radio
+    if patron == 'cuadrado':
+        borde = radio - 1
+        if abs(dx) > borde or abs(dy) > borde:
+            return False
+        if abs(dx) > borde - 3 and abs(dy) > borde - 3:
+            return math.sqrt((abs(dx) - (borde - 3)) ** 2 + (abs(dy) - (borde - 3)) ** 2) <= 3
+        return True
+    if patron == 'diamante':
+        return abs(dx) + abs(dy) <= radio
+    if patron == 'rayas':
+        return dist <= radio and (dy // 2) % 2 == 0
+    if patron == 'estrella':
+        if dx == 0 and dy == 0:
+            return True
+        angulo = math.atan2(dy, dx)
+        radio_estrella = radio * (0.35 + 0.65 * abs(math.cos(2 * angulo)))
+        return dist <= radio_estrella
+    if patron == 'triangulo':
+        return -radio <= dy <= radio and abs(dx) <= (dy + radio) / 2
+    if patron == 'cruz':
+        grosor = radio / 2.6
+        return dist <= radio and (abs(dx) <= grosor or abs(dy) <= grosor)
+    if patron == 'luna':
+        offset = radio * 0.45
+        radio2 = radio * 0.88
+        return dist <= radio and math.sqrt((dx - offset) ** 2 + dy * dy) > radio2
+    if patron == 'corazon':
+        lobe_r, lobe_cx, lobe_cy = radio * 0.4, radio * 0.46, -radio * 0.4
+        dist_izq = math.sqrt((dx + lobe_cx) ** 2 + (dy - lobe_cy) ** 2)
+        dist_der = math.sqrt((dx - lobe_cx) ** 2 + (dy - lobe_cy) ** 2)
+        en_lobulos = dist_izq <= lobe_r or dist_der <= lobe_r
+        en_triangulo = lobe_cy <= dy <= radio and abs(dx) <= radio * (radio - dy) / (radio - lobe_cy)
+        return en_lobulos or en_triangulo
+    if patron == 'reloj_arena':
+        return abs(dx) <= abs(dy) and dist <= radio * 1.5
+    if patron == 'hexagono':
+        return abs(dy) <= radio * 0.87 and abs(dx) <= radio - abs(dy) / 1.73
+    return dist <= radio  # 'circulo' y cualquier valor desconocido caen al círculo relleno
+
+
+def generar_avatar(patron, color_figura, color_fondo, tamano_px=32):
+    resolucion = 12
+    centro = (resolucion - 1) / 2
+    radio = resolucion / 2 - 1
+
+    img = tk.PhotoImage(width=resolucion, height=resolucion)
+    img.put(color_fondo, to=(0, 0, resolucion, resolucion))
+    for y in range(resolucion):
+        for x in range(resolucion):
+            if _es_pixel_avatar(patron, x - centro, y - centro, radio):
+                img.put(color_figura, to=(x, y, x + 1, y + 1))
+
+    escala = max(1, round(tamano_px / resolucion))
+    return img.zoom(escala, escala)
+
 MASCOTA_ASCII = (
     "  █     █  \n"
     "   █   █   \n"
@@ -147,11 +213,20 @@ class LoginFrame(ctk.CTkFrame):
         self.on_conectar = on_conectar
         self.on_cambiar_tema = on_cambiar_tema
         self.labels_secundarios = []
+        self.avatar_elegido = 'circulo'
+        self.botones_avatar = {}
+        self.imagenes_selector = {}
         self._construir()
 
     def _construir(self):
-        self.frame_tarjeta = ctk.CTkFrame(self, fg_color=self.tema['fondo'], corner_radius=0)
-        self.frame_tarjeta.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.scroll = ctk.CTkScrollableFrame(
+            self, fg_color=self.tema['fondo'], corner_radius=0,
+            scrollbar_button_color=self.tema['borde'], scrollbar_button_hover_color=self.tema['acento']
+        )
+        self.scroll.pack(fill=tk.BOTH, expand=True)
+
+        self.frame_tarjeta = ctk.CTkFrame(self.scroll, fg_color=self.tema['fondo'], corner_radius=0)
+        self.frame_tarjeta.pack(pady=30)
 
         self.linea_acento = tk.Frame(self.frame_tarjeta, bg=self.tema['acento'], height=4)
         self.linea_acento.pack(fill=tk.X)
@@ -208,6 +283,35 @@ class LoginFrame(ctk.CTkFrame):
 
         self.entries['entry_nick'].focus()
 
+        self.label_avatar = ctk.CTkLabel(
+            self.frame_central, text='Foto de perfil', fg_color='transparent',
+            text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 13), anchor='w'
+        )
+        self.label_avatar.pack(fill=tk.X, pady=(12, 6))
+        self.labels_secundarios.append(self.label_avatar)
+
+        self.frame_avatares = ctk.CTkFrame(self.frame_central, fg_color='transparent')
+        self.frame_avatares.pack()
+
+        columnas_avatar = 6
+        for indice, patron in enumerate(AVATARES_DISPONIBLES):
+            imagen = generar_avatar(
+                patron, self.tema['texto_secundario'], self.tema['entrada'], tamano_px=36
+            )
+            self.imagenes_selector[patron] = imagen
+            boton = ctk.CTkButton(
+                self.frame_avatares, text='', image=imagen, width=44, height=44,
+                corner_radius=22, fg_color=self.tema['entrada'], hover_color=self.tema['borde'],
+                border_width=0, border_color=self.tema['acento'],
+                command=lambda p=patron: self._elegir_avatar(p)
+            )
+            fila, columna = divmod(indice, columnas_avatar)
+            boton.grid(row=fila, column=columna, padx=3, pady=3)
+            self.botones_avatar[patron] = boton
+
+        self._elegir_avatar(self.avatar_elegido)
+
         self.boton_conectar = ctk.CTkButton(
             self.frame_central, text='Conectar al chat', command=self._intentar_conectar,
             fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
@@ -237,9 +341,21 @@ class LoginFrame(ctk.CTkFrame):
         if self.on_cambiar_tema:
             self.on_cambiar_tema()
 
+    def _elegir_avatar(self, patron):
+        self.avatar_elegido = patron
+        for p, boton in self.botones_avatar.items():
+            if p == patron:
+                boton.configure(border_width=3)
+            else:
+                boton.configure(border_width=0)
+
     def _aplicar_tema(self, tema):
         self.tema = tema
         self.configure(fg_color=tema['fondo'])
+        self.scroll.configure(
+            fg_color=tema['fondo'], scrollbar_button_color=tema['borde'],
+            scrollbar_button_hover_color=tema['acento']
+        )
         self.frame_tarjeta.configure(fg_color=tema['fondo'])
         self.linea_acento.configure(bg=tema['acento'])
         self.frame_central.configure(fg_color=tema['panel'])
@@ -250,6 +366,11 @@ class LoginFrame(ctk.CTkFrame):
             label_campo.configure(text_color=tema['texto_secundario'])
         for entry in self.entries.values():
             entry.configure(fg_color=tema['entrada'], text_color=tema['texto'], border_color=tema['borde'])
+        for patron, boton in self.botones_avatar.items():
+            imagen = generar_avatar(patron, tema['texto_secundario'], tema['entrada'], tamano_px=36)
+            self.imagenes_selector[patron] = imagen
+            boton.configure(image=imagen, fg_color=tema['entrada'], hover_color=tema['borde'],
+                             border_color=tema['acento'])
         self.boton_conectar.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
         ctk.set_appearance_mode('light' if tema['nombre'] == 'claro' else 'dark')
 
@@ -268,7 +389,7 @@ class LoginFrame(ctk.CTkFrame):
             self.label_error.configure(text='El nickname no puede estar vacío.')
             return
 
-        self.on_conectar(ip, puerto, nickname)
+        self.on_conectar(ip, puerto, nickname, self.avatar_elegido)
 
     def mostrar_error(self, mensaje):
         self.label_error.configure(text=mensaje)
@@ -290,7 +411,9 @@ class ChatFrame(ctk.CTkFrame):
         self.hilo_escucha = None
         self.ultimo_typing = 0
         self.imagenes = []  # Referencias para evitar que se borren
-        self.tags_usuario = set()
+        self.avatares_usuarios = {}  # nickname -> patron de avatar elegido
+        self.cache_avatares = {}  # (nickname, patron, tamano) -> PhotoImage generado
+        self.usuarios_actuales = []  # últimos nicknames conectados recibidos
         self.eventos_chat = []  # registro de cada burbuja mostrada, para poder re-dibujar el chat completo
         self.reacciones_por_mensaje = {}  # id_mensaje -> {emoji: set(nicknames)}
         self._marca_agua_presente = False
@@ -545,8 +668,8 @@ class ChatFrame(ctk.CTkFrame):
         self.boton_enviar.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
 
         self._configurar_tags()
-        for fila in self.lista_usuarios.winfo_children():
-            fila.configure(hover_color=tema['borde'], text_color=tema['online'])
+        self.cache_avatares.clear()
+        self._actualizar_usuarios(self.usuarios_actuales)
 
         ctk.set_appearance_mode('light' if tema['nombre'] == 'claro' else 'dark')
 
@@ -609,12 +732,14 @@ class ChatFrame(ctk.CTkFrame):
         # Mensajes propios alineados a la derecha
         tags.tag_config('derecha', justify=tk.RIGHT)
 
-    def _tag_avatar(self, nickname):
-        tag_id = f'avatar_{nickname}'
-        if tag_id not in self.tags_usuario:
-            self.area_chat._textbox.tag_config(tag_id, foreground=color_usuario(nickname))
-            self.tags_usuario.add(tag_id)
-        return tag_id
+    def _obtener_avatar(self, nickname, tamano):
+        patron = self.avatares_usuarios.get(nickname, 'circulo')
+        clave = (nickname, patron, tamano)
+        if clave not in self.cache_avatares:
+            self.cache_avatares[clave] = generar_avatar(
+                patron, color_usuario(nickname), self.tema['panel'], tamano_px=tamano
+            )
+        return self.cache_avatares[clave]
 
     def _mostrar_marca_agua(self):
         self.area_chat.configure(state=tk.NORMAL)
@@ -779,9 +904,10 @@ class ChatFrame(ctk.CTkFrame):
 
             self.area_chat.insert(tk.END, '┃ ', tag_texto)
             if tipo == 'msg' and not es_propio:
-                avatar = self._tag_avatar(emisor)
-                self.area_chat.insert(tk.END, '● ', (tag_nombre, avatar))
-                self.area_chat.insert(tk.END, f'{prefijo}  ', (tag_nombre, avatar))
+                avatar_img = self._obtener_avatar(emisor, 18)
+                self.area_chat._textbox.image_create(tk.END, image=avatar_img)
+                self.area_chat.insert(tk.END, ' ', tag_nombre)
+                self.area_chat.insert(tk.END, f'{prefijo}  ', tag_nombre)
             else:
                 self.area_chat.insert(tk.END, f'{prefijo}  ', tag_nombre)
             self.area_chat.insert(tk.END, f'{hora}\n', tag_hora)
@@ -852,6 +978,7 @@ class ChatFrame(ctk.CTkFrame):
             self._agregar_burbuja('', mensaje['contenido'], '', 'server')
 
         elif tipo == 'usuarios':
+            self.avatares_usuarios.update(mensaje.get('avatares', {}))
             self._actualizar_usuarios(mensaje.get('contenido', []))
 
         elif tipo == 'historial':
@@ -933,14 +1060,16 @@ class ChatFrame(ctk.CTkFrame):
         self.root.after(3000, lambda: self.label_typing.configure(text=''))
 
     def _actualizar_usuarios(self, usuarios):
+        self.usuarios_actuales = usuarios
         for fila in self.lista_usuarios.winfo_children():
             fila.destroy()
 
         valores = ['Todos']
         for u in usuarios:
-            simbolo = '●' if u != self.nickname else '● (tú)'
+            texto = f'{u} (tú)' if u == self.nickname else u
             ctk.CTkButton(
-                self.lista_usuarios, text=f'{simbolo} {u}', anchor='w',
+                self.lista_usuarios, text=f'  {texto}', anchor='w',
+                image=self._obtener_avatar(u, 24), compound='left',
                 fg_color='transparent', hover_color=self.tema['borde'],
                 text_color=self.tema['online'], font=('Segoe UI', 15),
                 corner_radius=8, height=32,
@@ -961,7 +1090,6 @@ class ChatFrame(ctk.CTkFrame):
             enviar_mensaje_publico(self.sock, texto)
         else:
             enviar_mensaje_privado(self.sock, destinatario, texto)
-            self._agregar_burbuja(self.nickname, texto, time.strftime('%H:%M:%S'), 'priv')
 
         self.entry_mensaje.delete(0, tk.END)
 
@@ -1054,14 +1182,14 @@ class ChatGUI:
             self.chat_frame._historial_mostrado = False
             self.chat_frame._mostrar_marca_agua()
 
-    def _conectar(self, ip, puerto, nickname):
+    def _conectar(self, ip, puerto, nickname, avatar='circulo'):
         try:
             self.sock = conectar(ip, puerto)
         except Exception as e:
             self.login_frame.mostrar_error(f'No se pudo conectar: {e}')
             return
 
-        enviar_nickname(self.sock, nickname)
+        enviar_nickname(self.sock, nickname, avatar)
         respuesta = recibir(self.sock)
 
         if respuesta and respuesta.get('contenido') == 'NICK_INVALIDO':
@@ -1081,6 +1209,7 @@ class ChatGUI:
         self.chat_frame.sock = self.sock
         self.chat_frame.nickname = nickname
         self.chat_frame.conectado = True
+        self.chat_frame.avatares_usuarios[nickname] = avatar
         self.chat_frame.pack(fill=tk.BOTH, expand=True)
 
         self.chat_frame._manejar_mensaje({

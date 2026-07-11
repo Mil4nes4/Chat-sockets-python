@@ -43,8 +43,8 @@ def recibir(socket_cliente):
     return json.loads(data.decode('utf-8'))
 
 
-def enviar_nickname(socket_cliente, nickname):
-    enviar(socket_cliente, {'tipo': 'nick', 'contenido': nickname})
+def enviar_nickname(socket_cliente, nickname, avatar='circulo'):
+    enviar(socket_cliente, {'tipo': 'nick', 'contenido': nickname, 'avatar': avatar})
 
 
 def enviar_mensaje_publico(socket_cliente, mensaje):

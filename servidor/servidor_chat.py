@@ -16,6 +16,8 @@ CARPETA_ARCHIVOS = os.path.join(BASE_DIR, 'archivos_recibidos')
 
 # Diccionario global de clientes conectados: nickname -> socket
 clientes = {}
+# Diccionario global de avatares elegidos: nickname -> patron_key
+avatares = {}
 lock = threading.Lock()
 siguiente_id_mensaje = 0
 
@@ -85,7 +87,8 @@ def enviar_privado(destinatario, mensaje):
 def enviar_lista_usuarios():
     with lock:
         usuarios = list(clientes.keys())
-    broadcast({'tipo': 'usuarios', 'contenido': usuarios})
+        copia_avatares = dict(avatares)
+    broadcast({'tipo': 'usuarios', 'contenido': usuarios, 'avatares': copia_avatares})
 
 
 def guardar_historial(linea):
@@ -170,6 +173,7 @@ def manejar_cliente(socket_cliente, direccion):
             return
 
         nickname = mensaje.get('contenido', '').strip()
+        avatar = mensaje.get('avatar', 'circulo')
 
         with lock:
             if not nickname or nickname in clientes:
@@ -179,6 +183,7 @@ def manejar_cliente(socket_cliente, direccion):
                 })
                 return
             clientes[nickname] = socket_cliente
+            avatares[nickname] = avatar
 
         print(f'[Conectado] {nickname} desde {direccion}')
 
@@ -217,19 +222,23 @@ def manejar_cliente(socket_cliente, direccion):
                 destinatario = mensaje.get('destinatario')
                 contenido = mensaje.get('contenido', '')
                 hora = obtener_hora()
-                enviar_privado(destinatario, {
+                mensaje_priv = {
                     'tipo': 'priv',
                     'id': nuevo_id_mensaje(),
                     'emisor': nickname,
                     'destinatario': destinatario,
                     'contenido': contenido,
                     'hora': hora
-                })
+                }
+                enviar_privado(destinatario, mensaje_priv)
+                if destinatario != nickname:
+                    enviar(socket_cliente, mensaje_priv)
 
             elif tipo == 'list':
                 with lock:
                     usuarios = list(clientes.keys())
-                enviar(socket_cliente, {'tipo': 'usuarios', 'contenido': usuarios})
+                    copia_avatares = dict(avatares)
+                enviar(socket_cliente, {'tipo': 'usuarios', 'contenido': usuarios, 'avatares': copia_avatares})
 
             elif tipo == 'file':
                 destinatario = mensaje.get('destinatario', 'todos')
@@ -270,6 +279,7 @@ def manejar_cliente(socket_cliente, direccion):
             with lock:
                 if nickname in clientes:
                     del clientes[nickname]
+                avatares.pop(nickname, None)
             print(f'[Desconectado] {nickname}')
             broadcast({
                 'tipo': 'server',
