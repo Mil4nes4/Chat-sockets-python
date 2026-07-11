@@ -5,6 +5,13 @@ import os
 
 CARPETA_DESCARGAS = 'descargas'
 
+EMOJIS_COMUNES = [
+    '😀', '😂', '😅', '😉', '😊', '😍', '😘', '😎', '🤔', '😴',
+    '😭', '😡', '🥳', '😱', '🤯', '🙄', '😇', '🤗', '🤝', '👍',
+    '👎', '👏', '🙏', '💪', '✌️', '👀', '❤️', '💔', '🔥', '⭐',
+    '🎉', '✅', '❌', '⚠️', '💬', '☕', '🍕', '🎮', '💻', '📎',
+]
+
 
 def conectar(ip, puerto):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -58,6 +65,10 @@ def solicitar_lista(socket_cliente):
 
 def enviar_typing(socket_cliente, destinatario='todos'):
     enviar(socket_cliente, {'tipo': 'typing', 'destinatario': destinatario})
+
+
+def enviar_reaccion(socket_cliente, id_mensaje, emoji):
+    enviar(socket_cliente, {'tipo': 'reaccion', 'id_mensaje': id_mensaje, 'emoji': emoji})
 
 
 def enviar_archivo(socket_cliente, ruta, destinatario='todos'):

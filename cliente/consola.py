@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cliente.cliente_chat import (
     conectar, enviar, recibir, enviar_nickname, enviar_mensaje_publico,
     enviar_mensaje_privado, solicitar_lista, enviar_archivo,
-    enviar_typing, guardar_archivo, cerrar
+    enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES
 )
 
 
@@ -149,6 +149,7 @@ def imprimir_ayuda():
         print(f'{margen}  {color("/usuarios", Color.AMARILLO)}                    Ver usuarios conectados  ({color("/u", Color.AMARILLO)})')
         print(f'{margen}  {color("/archivo", Color.AMARILLO)} <ruta> [usuario]    Enviar archivo             ({color("/a", Color.AMARILLO)})')
         print(f'{margen}  {color("/buscar", Color.AMARILLO)} <texto>              Buscar en el historial     ({color("/b", Color.AMARILLO)})')
+        print(f'{margen}  {color("/emoji", Color.AMARILLO)}                       Enviar mensaje con emoji   ({color("/e", Color.AMARILLO)})')
         print(f'{margen}  {color("/limpiar", Color.AMARILLO)}                     Limpiar pantalla           ({color("/clear", Color.AMARILLO)})')
         print(f'{margen}  {color("/reconectar", Color.AMARILLO)}                  Intentar reconectar        ({color("/r", Color.AMARILLO)})')
         print(f'{margen}  {color("/salir", Color.AMARILLO)}                       Desconectarse              ({color("/s", Color.AMARILLO)})')
@@ -161,6 +162,21 @@ def imprimir_ayuda():
             f'{color("●", Color.MAGENTA)} archivo  '
             f'{color("●", Color.GRIS)} historial'
         )
+        print()
+
+
+def imprimir_menu_emojis():
+    with LOCK_IMPRESION:
+        margen = _margen_centrado()
+        print()
+        print(margen + color('┌' + '─' * (ANCHO_BANNER - 2) + '┐', Color.CIAN))
+        print(margen + color('│' + 'ELEGÍ UN EMOJI'.center(ANCHO_BANNER - 2) + '│', Color.CIAN))
+        print(margen + color('└' + '─' * (ANCHO_BANNER - 2) + '┘', Color.CIAN))
+        por_fila = 10
+        for i in range(0, len(EMOJIS_COMUNES), por_fila):
+            fila = EMOJIS_COMUNES[i:i + por_fila]
+            numeros = '  '.join(f'{color(str(i + j + 1), Color.AMARILLO)}:{e}' for j, e in enumerate(fila))
+            print(f'{margen}  {numeros}')
         print()
 
 
@@ -377,6 +393,9 @@ class ClienteConsola:
                 return
             self._buscar(partes[1])
 
+        elif entrada in ('/emoji', '/e'):
+            self._enviar_con_emoji()
+
         elif entrada in ('/limpiar', '/clear'):
             self._limpiar()
 
@@ -393,6 +412,22 @@ class ClienteConsola:
             enviar_mensaje_publico(self.sock, entrada)
 
         return True
+
+    def _enviar_con_emoji(self):
+        imprimir_menu_emojis()
+        eleccion = input(color('Elegí un número (Enter para cancelar): ', Color.BOLD)).strip()
+        if not eleccion:
+            return
+        try:
+            indice = int(eleccion) - 1
+            emoji = EMOJIS_COMUNES[indice]
+        except (ValueError, IndexError):
+            print(color('Número inválido.', Color.ROJO))
+            return
+
+        texto = input(color(f'Mensaje con {emoji} (Enter para mandar solo el emoji): ', Color.BOLD)).strip()
+        mensaje = f'{emoji} {texto}'.strip() if texto else emoji
+        enviar_mensaje_publico(self.sock, mensaje)
 
     def _buscar(self, texto):
         coincidencias = [linea for linea in self.historial if texto.lower() in linea.lower()]

@@ -17,6 +17,14 @@ CARPETA_ARCHIVOS = os.path.join(BASE_DIR, 'archivos_recibidos')
 # Diccionario global de clientes conectados: nickname -> socket
 clientes = {}
 lock = threading.Lock()
+siguiente_id_mensaje = 0
+
+
+def nuevo_id_mensaje():
+    global siguiente_id_mensaje
+    with lock:
+        siguiente_id_mensaje += 1
+        return siguiente_id_mensaje
 
 
 def obtener_ip_local():
@@ -113,6 +121,7 @@ def manejar_archivo(emisor, destinatario, nombre_archivo, datos_base64):
 
     mensaje = {
         'tipo': 'file',
+        'id': nuevo_id_mensaje(),
         'emisor': emisor,
         'destinatario': destinatario,
         'nombre_archivo': nombre_archivo,
@@ -198,6 +207,7 @@ def manejar_cliente(socket_cliente, direccion):
                 guardar_historial(texto_historial)
                 broadcast({
                     'tipo': 'msg',
+                    'id': nuevo_id_mensaje(),
                     'emisor': nickname,
                     'contenido': contenido,
                     'hora': hora
@@ -209,6 +219,7 @@ def manejar_cliente(socket_cliente, direccion):
                 hora = obtener_hora()
                 enviar_privado(destinatario, {
                     'tipo': 'priv',
+                    'id': nuevo_id_mensaje(),
                     'emisor': nickname,
                     'destinatario': destinatario,
                     'contenido': contenido,
@@ -237,6 +248,17 @@ def manejar_cliente(socket_cliente, direccion):
                     broadcast(notificacion, excluir=nickname)
                 else:
                     enviar_privado(destinatario, notificacion)
+
+            elif tipo == 'reaccion':
+                id_mensaje = mensaje.get('id_mensaje')
+                emoji = mensaje.get('emoji')
+                if id_mensaje is not None and emoji:
+                    broadcast({
+                        'tipo': 'reaccion',
+                        'id_mensaje': id_mensaje,
+                        'emisor': nickname,
+                        'emoji': emoji
+                    })
 
             elif tipo == 'exit':
                 break

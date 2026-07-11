@@ -4,15 +4,19 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, filedialog
+from tkinter import scrolledtext, messagebox, filedialog
+
+import customtkinter as ctk
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cliente.cliente_chat import (
     conectar, recibir, enviar_nickname, enviar_mensaje_publico,
     enviar_mensaje_privado, solicitar_lista, enviar_archivo,
-    enviar_typing, guardar_archivo, cerrar
+    enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES, enviar_reaccion
 )
+
+REACCIONES_RAPIDAS = ['👍', '❤️', '😂', '😮', '😢', '🙏']
 
 try:
     from PIL import Image, ImageTk
@@ -41,6 +45,30 @@ TEMA_OSCURO = {
     'archivo': '#ff6b6e',
     'archivo_fondo': '#4a2c2e',
     'online': '#3ddc84',
+    'busqueda': '#fee75c'
+}
+
+TEMA_CLARO = {
+    'nombre': 'claro',
+    'fondo': '#ffffff',
+    'panel': '#f2f3f5',
+    'entrada': '#e3e5e8',
+    'borde': '#d4d7dc',
+    'texto': '#060607',
+    'texto_secundario': '#5c5e66',
+    'acento': '#5865f2',
+    'acento_hover': '#4752c4',
+    'propio': '#4147c4',
+    'propio_fondo': '#e3e5fd',
+    'otros_fondo': '#f2f3f5',
+    'privado': '#a85700',
+    'privado_fondo': '#fdecd8',
+    'server': '#1a8754',
+    'server_fondo': '#e3f9ee',
+    'historial': '#6d7075',
+    'archivo': '#c62828',
+    'archivo_fondo': '#fbe4e4',
+    'online': '#23a55a',
     'busqueda': '#fee75c'
 }
 
@@ -109,81 +137,49 @@ def crear_icono_mascota(tema, escala=3):
     return img.zoom(escala, escala)
 
 
-def crear_boton_redondeado(parent, texto, comando, bg, fg, fondo_padre,
-                            bg_hover=None, ancho=140, alto=42, radio=12,
-                            font=('Segoe UI', 11, 'bold')):
-    bg_hover = bg_hover or bg
-    canvas = tk.Canvas(
-        parent, width=ancho, height=alto, bg=fondo_padre,
-        highlightthickness=0, cursor='hand2'
-    )
-
-    def _dibujar(color):
-        canvas.delete('all')
-        r = radio
-        canvas.create_oval(0, 0, 2 * r, 2 * r, fill=color, outline=color)
-        canvas.create_oval(ancho - 2 * r, 0, ancho, 2 * r, fill=color, outline=color)
-        canvas.create_oval(0, alto - 2 * r, 2 * r, alto, fill=color, outline=color)
-        canvas.create_oval(ancho - 2 * r, alto - 2 * r, ancho, alto, fill=color, outline=color)
-        canvas.create_rectangle(r, 0, ancho - r, alto, fill=color, outline=color)
-        canvas.create_rectangle(0, r, ancho, alto - r, fill=color, outline=color)
-        canvas.create_text(ancho / 2, alto / 2, text=texto, fill=fg, font=font)
-
-    _dibujar(bg)
-    canvas.bind('<Button-1>', lambda e: comando())
-    canvas.bind('<Enter>', lambda e: _dibujar(bg_hover))
-    canvas.bind('<Leave>', lambda e: _dibujar(bg))
-    return canvas
-
-
-def configurar_estilo_ttk(tema):
-    style = ttk.Style()
-    style.theme_use('clam')
-    style.configure(
-        'TCombobox',
-        fieldbackground=tema['entrada'], background=tema['entrada'],
-        foreground=tema['texto'], arrowcolor=tema['texto'],
-        bordercolor=tema['borde'], lightcolor=tema['entrada'],
-        darkcolor=tema['entrada']
-    )
-    style.map(
-        'TCombobox',
-        fieldbackground=[('readonly', tema['entrada'])],
-        foreground=[('readonly', tema['texto'])],
-        background=[('readonly', tema['entrada'])]
-    )
 
 
 # PANTALLA DE LOGIN
-class LoginFrame(tk.Frame):
-    def __init__(self, master, tema, on_conectar, **kwargs):
-        super().__init__(master, bg=tema['fondo'], **kwargs)
+class LoginFrame(ctk.CTkFrame):
+    def __init__(self, master, tema, on_conectar, on_cambiar_tema=None, **kwargs):
+        super().__init__(master, fg_color=tema['fondo'], corner_radius=0, **kwargs)
         self.tema = tema
         self.on_conectar = on_conectar
+        self.on_cambiar_tema = on_cambiar_tema
+        self.labels_secundarios = []
         self._construir()
 
     def _construir(self):
-        self.configure(bg=self.tema['fondo'])
+        self.frame_tarjeta = ctk.CTkFrame(self, fg_color=self.tema['fondo'], corner_radius=0)
+        self.frame_tarjeta.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
-        frame_tarjeta = tk.Frame(self, bg=self.tema['fondo'])
-        frame_tarjeta.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.linea_acento = tk.Frame(self.frame_tarjeta, bg=self.tema['acento'], height=4)
+        self.linea_acento.pack(fill=tk.X)
 
-        tk.Frame(frame_tarjeta, bg=self.tema['acento'], height=4).pack(fill=tk.X)
+        self.frame_central = ctk.CTkFrame(self.frame_tarjeta, fg_color=self.tema['panel'], corner_radius=16)
+        self.frame_central.pack(ipadx=40, ipady=32)
 
-        frame_central = tk.Frame(frame_tarjeta, bg=self.tema['panel'], padx=40, pady=32)
-        frame_central.pack()
+        self.switch_tema = ctk.CTkSwitch(
+            self.frame_central, text='Tema claro', command=self._on_switch_tema,
+            text_color=self.tema['texto_secundario'], font=('Segoe UI', 11),
+            progress_color=self.tema['acento']
+        )
+        self.switch_tema.pack(anchor='e')
+        if self.tema['nombre'] == 'claro':
+            self.switch_tema.select()
 
-        tk.Label(
-            frame_central, text=MASCOTA_ASCII,
-            bg=self.tema['panel'], fg=self.tema['server'],
-            font=('Lucida Console', 10, 'bold'), justify=tk.CENTER
-        ).pack(pady=(0, 14))
+        self.label_mascota = ctk.CTkLabel(
+            self.frame_central, text=MASCOTA_ASCII, fg_color='transparent',
+            text_color=self.tema['server'],
+            font=('Lucida Console', 11, 'bold'), justify=tk.CENTER
+        )
+        self.label_mascota.pack(pady=(26, 16))
 
-        tk.Label(
-            frame_central, text='Chat con Sockets',
-            bg=self.tema['panel'], fg=self.tema['texto'],
-            font=('Segoe UI', 24, 'bold')
-        ).pack(pady=(0, 24))
+        self.label_titulo_login = ctk.CTkLabel(
+            self.frame_central, text='Chat con Sockets', fg_color='transparent',
+            text_color=self.tema['texto'], font=('Segoe UI', 26, 'bold')
+        )
+        self.label_titulo_login.pack(pady=(0, 24))
 
         campos = [
             ('IP del servidor', '127.0.0.1', 'entry_ip'),
@@ -193,47 +189,69 @@ class LoginFrame(tk.Frame):
 
         self.entries = {}
         for label, default, attr in campos:
-            tk.Label(
-                frame_central, text=label,
-                bg=self.tema['panel'], fg=self.tema['texto_secundario'],
-                font=('Segoe UI', 11), anchor='w'
-            ).pack(fill=tk.X, pady=(12, 3))
-            entry = tk.Entry(
-                frame_central, width=32,
-                bg=self.tema['entrada'], fg=self.tema['texto'],
-                insertbackground=self.tema['texto'],
-                font=('Segoe UI', 12), relief=tk.FLAT,
-                highlightthickness=1, highlightbackground=self.tema['borde'],
-                highlightcolor=self.tema['acento']
+            label_campo = ctk.CTkLabel(
+                self.frame_central, text=label, fg_color='transparent',
+                text_color=self.tema['texto_secundario'],
+                font=('Segoe UI', 13), anchor='w'
+            )
+            label_campo.pack(fill=tk.X, pady=(12, 3))
+            self.labels_secundarios.append(label_campo)
+            entry = ctk.CTkEntry(
+                self.frame_central, width=300, height=40,
+                fg_color=self.tema['entrada'], text_color=self.tema['texto'],
+                border_color=self.tema['borde'], border_width=1,
+                corner_radius=8, font=('Segoe UI', 14)
             )
             entry.insert(0, default)
-            entry.pack(fill=tk.X, ipady=8, pady=(0, 5))
+            entry.pack(fill=tk.X, pady=(0, 5))
             self.entries[attr] = entry
 
         self.entries['entry_nick'].focus()
 
-        self.boton_conectar = crear_boton_redondeado(
-            frame_central, 'Conectar al chat', self._intentar_conectar,
-            bg=self.tema['acento'], fg='white', fondo_padre=self.tema['panel'],
-            bg_hover=self.tema['acento_hover'], ancho=300, alto=48,
-            font=('Segoe UI', 12, 'bold')
+        self.boton_conectar = ctk.CTkButton(
+            self.frame_central, text='Conectar al chat', command=self._intentar_conectar,
+            fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
+            text_color='white', width=300, height=48, corner_radius=12,
+            font=('Segoe UI', 14, 'bold')
         )
         self.boton_conectar.pack(pady=(24, 0))
 
-        self.label_error = tk.Label(
-            frame_central, text='', fg='#ed4245',
-            bg=self.tema['panel'], font=('Segoe UI', 10)
+        self.label_error = ctk.CTkLabel(
+            self.frame_central, text='', text_color='#ed4245',
+            fg_color='transparent', font=('Segoe UI', 12)
         )
         self.label_error.pack(pady=(10, 0))
 
-        tk.Label(
-            frame_central, text='Sockets TCP · Sistemas Operativos',
-            bg=self.tema['panel'], fg=self.tema['texto_secundario'],
-            font=('Segoe UI', 9)
-        ).pack(pady=(18, 0))
+        self.label_pie = ctk.CTkLabel(
+            self.frame_central, text='Sockets TCP · Sistemas Operativos',
+            fg_color='transparent', text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 11)
+        )
+        self.label_pie.pack(pady=(18, 0))
+        self.labels_secundarios.append(self.label_pie)
 
         self.entries['entry_puerto'].bind('<Return>', lambda e: self._intentar_conectar())
         self.entries['entry_nick'].bind('<Return>', lambda e: self._intentar_conectar())
+
+    def _on_switch_tema(self):
+        if self.on_cambiar_tema:
+            self.on_cambiar_tema()
+
+    def _aplicar_tema(self, tema):
+        self.tema = tema
+        self.configure(fg_color=tema['fondo'])
+        self.frame_tarjeta.configure(fg_color=tema['fondo'])
+        self.linea_acento.configure(bg=tema['acento'])
+        self.frame_central.configure(fg_color=tema['panel'])
+        self.switch_tema.configure(text_color=tema['texto_secundario'], progress_color=tema['acento'])
+        self.label_mascota.configure(text_color=tema['server'])
+        self.label_titulo_login.configure(text_color=tema['texto'])
+        for label_campo in self.labels_secundarios:
+            label_campo.configure(text_color=tema['texto_secundario'])
+        for entry in self.entries.values():
+            entry.configure(fg_color=tema['entrada'], text_color=tema['texto'], border_color=tema['borde'])
+        self.boton_conectar.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
+        ctk.set_appearance_mode('light' if tema['nombre'] == 'claro' else 'dark')
 
     def _intentar_conectar(self):
         ip = self.entries['entry_ip'].get().strip() or '127.0.0.1'
@@ -243,25 +261,26 @@ class LoginFrame(tk.Frame):
         try:
             puerto = int(puerto_str)
         except ValueError:
-            self.label_error.config(text='El puerto debe ser un número.')
+            self.label_error.configure(text='El puerto debe ser un número.')
             return
 
         if not nickname:
-            self.label_error.config(text='El nickname no puede estar vacío.')
+            self.label_error.configure(text='El nickname no puede estar vacío.')
             return
 
         self.on_conectar(ip, puerto, nickname)
 
     def mostrar_error(self, mensaje):
-        self.label_error.config(text=mensaje)
+        self.label_error.configure(text=mensaje)
 
 
 # PANTALLA DE CHAT
-class ChatFrame(tk.Frame):
-    def __init__(self, master, tema, on_desconectar, ip='', puerto=None, **kwargs):
-        super().__init__(master, bg=tema['fondo'], **kwargs)
+class ChatFrame(ctk.CTkFrame):
+    def __init__(self, master, tema, on_desconectar, on_cambiar_tema=None, ip='', puerto=None, **kwargs):
+        super().__init__(master, fg_color=tema['fondo'], corner_radius=0, **kwargs)
         self.tema = tema
         self.on_desconectar = on_desconectar
+        self.on_cambiar_tema = on_cambiar_tema
         self.ip = ip
         self.puerto = puerto
         self.nickname = ''
@@ -272,6 +291,8 @@ class ChatFrame(tk.Frame):
         self.ultimo_typing = 0
         self.imagenes = []  # Referencias para evitar que se borren
         self.tags_usuario = set()
+        self.eventos_chat = []  # registro de cada burbuja mostrada, para poder re-dibujar el chat completo
+        self.reacciones_por_mensaje = {}  # id_mensaje -> {emoji: set(nicknames)}
         self._marca_agua_presente = False
         self._historial_mostrado = False
 
@@ -280,48 +301,58 @@ class ChatFrame(tk.Frame):
 
     def _construir(self):
         # Barra superior
-        frame_superior = tk.Frame(self, bg=self.tema['panel'], height=50)
-        frame_superior.pack(fill=tk.X)
-        frame_superior.pack_propagate(False)
+        self.frame_superior = tk.Frame(self, bg=self.tema['panel'], height=50)
+        self.frame_superior.pack(fill=tk.X)
+        self.frame_superior.pack_propagate(False)
 
-        self.label_titulo = tk.Label(
-            frame_superior, text='👾 Chat con Sockets',
-            bg=self.tema['panel'], fg=self.tema['texto'],
-            font=('Segoe UI', 13, 'bold')
+        self.label_titulo = ctk.CTkLabel(
+            self.frame_superior, text='👾 Chat con Sockets', fg_color='transparent',
+            text_color=self.tema['texto'], font=('Segoe UI', 16, 'bold')
         )
         self.label_titulo.pack(side=tk.LEFT, padx=15, pady=10)
 
-        self.boton_buscar = crear_boton_redondeado(
-            frame_superior, '🔍 Buscar', self._mostrar_busqueda,
-            bg=self.tema['entrada'], fg=self.tema['texto'], fondo_padre=self.tema['panel'],
-            bg_hover=self.tema['borde'], ancho=120, alto=36, font=('Segoe UI', 11)
+        self.boton_buscar = ctk.CTkButton(
+            self.frame_superior, text='🔍 Buscar', command=self._mostrar_busqueda,
+            fg_color=self.tema['entrada'], hover_color=self.tema['borde'],
+            text_color=self.tema['texto'], width=120, height=36,
+            corner_radius=12, font=('Segoe UI', 14)
         )
         self.boton_buscar.pack(side=tk.RIGHT, padx=5, pady=6)
 
-        self.boton_desconectar = crear_boton_redondeado(
-            frame_superior, 'Desconectar', self.on_desconectar,
-            bg='#ed4245', fg='white', fondo_padre=self.tema['panel'],
-            bg_hover='#c93537', ancho=130, alto=36, font=('Segoe UI', 11, 'bold')
+        self.switch_tema = ctk.CTkSwitch(
+            self.frame_superior, text='Claro', command=self._on_switch_tema,
+            text_color=self.tema['texto_secundario'], font=('Segoe UI', 11),
+            progress_color=self.tema['acento']
+        )
+        self.switch_tema.pack(side=tk.RIGHT, padx=5, pady=6)
+        if self.tema['nombre'] == 'claro':
+            self.switch_tema.select()
+
+        self.boton_desconectar = ctk.CTkButton(
+            self.frame_superior, text='Desconectar', command=self.on_desconectar,
+            fg_color='#ed4245', hover_color='#c93537', text_color='white',
+            width=130, height=36, corner_radius=12, font=('Segoe UI', 14, 'bold')
         )
         self.boton_desconectar.pack(side=tk.RIGHT, padx=15, pady=6)
 
         # Línea de acento decorativa bajo la barra superior
-        tk.Frame(self, bg=self.tema['acento'], height=2).pack(fill=tk.X)
+        self.linea_acento_superior = tk.Frame(self, bg=self.tema['acento'], height=2)
+        self.linea_acento_superior.pack(fill=tk.X)
 
         # Panel de búsqueda (oculto inicialmente)
         self.frame_busqueda = tk.Frame(self, bg=self.tema['fondo'])
-        self.entry_busqueda = tk.Entry(
-            self.frame_busqueda, bg=self.tema['entrada'], fg=self.tema['texto'],
-            insertbackground=self.tema['texto'], font=('Segoe UI', 10),
-            relief=tk.FLAT, highlightthickness=1,
-            highlightbackground=self.tema['borde'], highlightcolor=self.tema['acento']
+        self.entry_busqueda = ctk.CTkEntry(
+            self.frame_busqueda, fg_color=self.tema['entrada'], text_color=self.tema['texto'],
+            border_color=self.tema['borde'], border_width=1,
+            corner_radius=8, font=('Segoe UI', 13)
         )
         self.entry_busqueda.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
         self.entry_busqueda.bind('<KeyRelease>', lambda e: self._buscar())
-        tk.Button(
-            self.frame_busqueda, text='Cerrar', bg=self.tema['entrada'],
-            fg=self.tema['texto'], relief=tk.FLAT, cursor='hand2',
-            command=self._ocultar_busqueda
+        ctk.CTkButton(
+            self.frame_busqueda, text='Cerrar', command=self._ocultar_busqueda,
+            fg_color=self.tema['entrada'], hover_color=self.tema['borde'],
+            text_color=self.tema['texto'], width=80, height=28,
+            corner_radius=8, font=('Segoe UI', 13)
         ).pack(side=tk.RIGHT, padx=5)
 
         # Área central: chat + usuarios
@@ -337,117 +368,123 @@ class ChatFrame(tk.Frame):
         # Panel de usuarios (se crea antes que el área de chat para que Tk
         # no corrompa el primer carácter del título al dibujarlo después
         # del widget Text con scrollbar)
-        frame_usuarios = tk.Frame(self.frame_central, bg=self.tema['panel'], width=225)
-        frame_usuarios.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 10), pady=10)
-        frame_usuarios.pack_propagate(False)
+        self.frame_usuarios = tk.Frame(self.frame_central, bg=self.tema['panel'], width=225)
+        self.frame_usuarios.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 10), pady=10)
+        self.frame_usuarios.pack_propagate(False)
 
-        tk.Label(
-            frame_usuarios, text='USUARIOS EN LÍNEA',
-            bg=self.tema['panel'], fg=self.tema['texto_secundario'],
-            font=('Segoe UI', 10, 'bold')
-        ).pack(anchor='w', padx=12, pady=(15, 5))
+        self.label_usuarios = ctk.CTkLabel(
+            self.frame_usuarios, text='USUARIOS EN LÍNEA', fg_color='transparent',
+            text_color=self.tema['texto_secundario'], font=('Segoe UI', 13, 'bold')
+        )
+        self.label_usuarios.pack(anchor='w', padx=12, pady=(15, 5))
 
-        self.lista_usuarios = tk.Listbox(
-            frame_usuarios, bg=self.tema['panel'], fg=self.tema['texto'],
-            selectbackground=self.tema['acento'], selectforeground='white',
-            font=('Segoe UI', 12),
-            highlightthickness=0, borderwidth=0, relief=tk.FLAT
+        self.lista_usuarios = ctk.CTkScrollableFrame(
+            self.frame_usuarios, fg_color=self.tema['panel'], corner_radius=0
         )
         self.lista_usuarios.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        self.lista_usuarios.bind('<Double-Button-1>', self._seleccionar_usuario)
 
         # Área de chat
-        frame_chat = tk.Frame(self.frame_central, bg=self.tema['fondo'])
-        frame_chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.frame_chat = tk.Frame(self.frame_central, bg=self.tema['fondo'])
+        self.frame_chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.area_chat = tk.Text(
-            frame_chat, wrap=tk.WORD, state=tk.DISABLED,
-            bg=self.tema['fondo'], fg=self.tema['texto'],
-            font=('Segoe UI', 11), padx=10, pady=10,
-            spacing1=2, spacing3=2, relief=tk.FLAT,
-            highlightthickness=1, highlightbackground=self.tema['borde'],
-            highlightcolor=self.tema['borde'], borderwidth=0
+        self.area_chat = ctk.CTkTextbox(
+            self.frame_chat, wrap=tk.WORD, state=tk.DISABLED,
+            fg_color=self.tema['fondo'], text_color=self.tema['texto'],
+            font=('Segoe UI', 14), padx=10, pady=10,
+            spacing1=2, spacing3=2,
+            corner_radius=8, border_width=1, border_color=self.tema['borde']
         )
         self.area_chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollbar = tk.Scrollbar(
-            frame_chat, command=self.area_chat.yview,
-            bg=self.tema['borde'], troughcolor=self.tema['panel'],
-            activebackground=self.tema['acento'], relief=tk.FLAT,
-            highlightthickness=0, borderwidth=0, elementborderwidth=0
-        )
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.area_chat.config(yscrollcommand=scrollbar.set)
 
         # El label de "escribiendo..." se crea aquí (para tener la
         # referencia disponible) pero se empaqueta más abajo, después de
         # toda la barra inferior, para que quede pegado justo encima de
         # ella en la pila de widgets "bottom" (ver comentario junto al
         # pack final de frame_central).
-        self.label_typing = tk.Label(
-            self, text='', bg=self.tema['fondo'], fg=self.tema['texto_secundario'],
-            font=('Segoe UI', 10, 'italic'), anchor='w'
+        self.label_typing = ctk.CTkLabel(
+            self, text='', fg_color='transparent', text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 13, 'italic'), anchor='w'
         )
 
         # Barra de estado de conexión
-        frame_estado = tk.Frame(self, bg=self.tema['panel'])
-        frame_estado.pack(fill=tk.X, side=tk.BOTTOM)
+        self.frame_estado = tk.Frame(self, bg=self.tema['panel'])
+        self.frame_estado.pack(fill=tk.X, side=tk.BOTTOM)
 
         texto_estado = f'● Conectado a {self.ip}:{self.puerto}' if self.ip else ''
-        self.label_estado = tk.Label(
-            frame_estado, text=texto_estado, bg=self.tema['panel'],
-            fg=self.tema['online'], font=('Segoe UI', 9), anchor='w'
+        self.label_estado = ctk.CTkLabel(
+            self.frame_estado, text=texto_estado, fg_color='transparent',
+            text_color=self.tema['online'], font=('Segoe UI', 12), anchor='w'
         )
         self.label_estado.pack(side=tk.LEFT, padx=12, ipady=3)
 
-        tk.Label(
-            frame_estado, text='Sockets TCP · Sistemas Operativos',
-            bg=self.tema['panel'], fg=self.tema['texto_secundario'],
-            font=('Segoe UI', 9), anchor='e'
-        ).pack(side=tk.RIGHT, padx=12, ipady=3)
+        self.label_creditos = ctk.CTkLabel(
+            self.frame_estado, text='Sockets TCP · Sistemas Operativos', fg_color='transparent',
+            text_color=self.tema['texto_secundario'], font=('Segoe UI', 12), anchor='e'
+        )
+        self.label_creditos.pack(side=tk.RIGHT, padx=12, ipady=3)
+
+        self.label_tip_reaccion = ctk.CTkLabel(
+            self.frame_estado, text='💡 Click derecho en un mensaje para reaccionar',
+            fg_color='transparent', text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 11, 'italic')
+        )
+        self.label_tip_reaccion.pack(side=tk.LEFT, expand=True, ipady=3)
 
         # Barra inferior de entrada
-        frame_inferior = tk.Frame(self, bg=self.tema['panel'], padx=10, pady=10)
-        frame_inferior.pack(fill=tk.X, side=tk.BOTTOM)
+        self.frame_inferior = tk.Frame(self, bg=self.tema['panel'], padx=10, pady=10)
+        self.frame_inferior.pack(fill=tk.X, side=tk.BOTTOM)
 
         # Línea de acento decorativa sobre la barra de envío (simétrica a la de arriba)
-        tk.Frame(self, bg=self.tema['acento'], height=2).pack(fill=tk.X, side=tk.BOTTOM)
+        self.linea_acento_inferior = tk.Frame(self, bg=self.tema['acento'], height=2)
+        self.linea_acento_inferior.pack(fill=tk.X, side=tk.BOTTOM)
 
-        self.entry_mensaje = tk.Entry(
-            frame_inferior, bg=self.tema['entrada'], fg=self.tema['texto'],
-            insertbackground=self.tema['texto'], font=('Segoe UI', 12),
-            relief=tk.FLAT, highlightthickness=1,
-            highlightbackground=self.tema['borde'], highlightcolor=self.tema['acento']
+        self.entry_mensaje = ctk.CTkEntry(
+            self.frame_inferior, fg_color=self.tema['entrada'], text_color=self.tema['texto'],
+            border_color=self.tema['borde'], border_width=1,
+            corner_radius=8, font=('Segoe UI', 15), height=40
         )
-        self.entry_mensaje.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10), ipady=10)
+        self.entry_mensaje.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.entry_mensaje.bind('<Return>', lambda e: self._enviar_mensaje())
         self.entry_mensaje.bind('<KeyRelease>', self._on_typing)
 
-        tk.Label(
-            frame_inferior, text='Para:', bg=self.tema['panel'],
-            fg=self.tema['texto_secundario'], font=('Segoe UI', 11)
-        ).pack(side=tk.LEFT)
+        self.label_para = ctk.CTkLabel(
+            self.frame_inferior, text='Para:', fg_color='transparent',
+            text_color=self.tema['texto_secundario'], font=('Segoe UI', 14)
+        )
+        self.label_para.pack(side=tk.LEFT)
 
-        self.combo_destinatario = ttk.Combobox(
-            frame_inferior, values=['Todos'], state='readonly', width=14,
-            font=('Segoe UI', 11)
+        self.combo_destinatario = ctk.CTkComboBox(
+            self.frame_inferior, values=['Todos'], state='readonly', width=140,
+            fg_color=self.tema['entrada'], text_color=self.tema['texto'],
+            border_color=self.tema['borde'], button_color=self.tema['borde'],
+            button_hover_color=self.tema['acento'],
+            dropdown_fg_color=self.tema['entrada'], dropdown_text_color=self.tema['texto'],
+            font=('Segoe UI', 14)
         )
         self.combo_destinatario.set('Todos')
         self.combo_destinatario.pack(side=tk.LEFT, padx=5)
 
-        self.boton_archivo = tk.Button(
-            frame_inferior, text='📎', bg=self.tema['entrada'],
-            fg=self.tema['texto'], relief=tk.FLAT, cursor='hand2',
-            font=('Segoe UI', 14), padx=6, pady=4,
-            command=self._enviar_archivo
+        self.boton_archivo = ctk.CTkButton(
+            self.frame_inferior, text='📎', command=self._enviar_archivo,
+            fg_color=self.tema['entrada'], hover_color=self.tema['borde'],
+            text_color=self.tema['texto'], width=44, height=40,
+            corner_radius=10, font=('Segoe UI', 17)
         )
         self.boton_archivo.pack(side=tk.LEFT, padx=5)
 
-        self.boton_enviar = crear_boton_redondeado(
-            frame_inferior, 'Enviar', self._enviar_mensaje,
-            bg=self.tema['acento'], fg='white', fondo_padre=self.tema['panel'],
-            bg_hover=self.tema['acento_hover'], ancho=100, alto=40,
-            font=('Segoe UI', 11, 'bold')
+        self.boton_emoji = ctk.CTkButton(
+            self.frame_inferior, text='😊', command=self._mostrar_selector_emoji,
+            fg_color=self.tema['entrada'], hover_color=self.tema['borde'],
+            text_color=self.tema['texto'], width=44, height=40,
+            corner_radius=10, font=('Segoe UI', 17)
+        )
+        self.boton_emoji.pack(side=tk.LEFT, padx=5)
+
+        self.boton_enviar = ctk.CTkButton(
+            self.frame_inferior, text='Enviar', command=self._enviar_mensaje,
+            fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
+            text_color='white', width=100, height=40,
+            corner_radius=12, font=('Segoe UI', 14, 'bold')
         )
         self.boton_enviar.pack(side=tk.LEFT, padx=5)
 
@@ -468,28 +505,78 @@ class ChatFrame(tk.Frame):
         self._configurar_tags()
         self._mostrar_marca_agua()
 
+    def _on_switch_tema(self):
+        if self.on_cambiar_tema:
+            self.on_cambiar_tema()
+
+    def _aplicar_tema(self, tema):
+        self.tema = tema
+        self.configure(fg_color=tema['fondo'])
+        self.frame_superior.configure(bg=tema['panel'])
+        self.label_titulo.configure(text_color=tema['texto'])
+        self.boton_buscar.configure(fg_color=tema['entrada'], hover_color=tema['borde'], text_color=tema['texto'])
+        self.switch_tema.configure(text_color=tema['texto_secundario'], progress_color=tema['acento'])
+        self.linea_acento_superior.configure(bg=tema['acento'])
+        self.linea_acento_inferior.configure(bg=tema['acento'])
+        self.frame_busqueda.configure(bg=tema['fondo'])
+        self.entry_busqueda.configure(fg_color=tema['entrada'], text_color=tema['texto'], border_color=tema['borde'])
+        self.frame_central.configure(bg=tema['fondo'])
+        self.frame_usuarios.configure(bg=tema['panel'])
+        self.label_usuarios.configure(text_color=tema['texto_secundario'])
+        self.lista_usuarios.configure(fg_color=tema['panel'])
+        self.frame_chat.configure(bg=tema['fondo'])
+        self.area_chat.configure(fg_color=tema['fondo'], text_color=tema['texto'], border_color=tema['borde'])
+        self.label_typing.configure(text_color=tema['texto_secundario'])
+        self.frame_estado.configure(bg=tema['panel'])
+        self.label_estado.configure(text_color=tema['online'])
+        self.label_creditos.configure(text_color=tema['texto_secundario'])
+        self.label_tip_reaccion.configure(text_color=tema['texto_secundario'])
+        self.frame_inferior.configure(bg=tema['panel'])
+        self.entry_mensaje.configure(fg_color=tema['entrada'], text_color=tema['texto'], border_color=tema['borde'])
+        self.label_para.configure(text_color=tema['texto_secundario'])
+        self.combo_destinatario.configure(
+            fg_color=tema['entrada'], text_color=tema['texto'],
+            border_color=tema['borde'], button_color=tema['borde'],
+            button_hover_color=tema['acento'],
+            dropdown_fg_color=tema['entrada'], dropdown_text_color=tema['texto']
+        )
+        self.boton_archivo.configure(fg_color=tema['entrada'], hover_color=tema['borde'], text_color=tema['texto'])
+        self.boton_emoji.configure(fg_color=tema['entrada'], hover_color=tema['borde'], text_color=tema['texto'])
+        self.boton_enviar.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
+
+        self._configurar_tags()
+        for fila in self.lista_usuarios.winfo_children():
+            fila.configure(hover_color=tema['borde'], text_color=tema['online'])
+
+        ctk.set_appearance_mode('light' if tema['nombre'] == 'claro' else 'dark')
+
     def _configurar_tags(self):
         t = self.tema
+        # CTkTextbox.tag_config() prohíbe el kwarg 'font' (lo bloquea por
+        # incompatibilidad con su escalado de UI). Para poder seguir fijando
+        # fuente por tag como antes, se usa el tkinter.Text real que
+        # CTkTextbox envuelve internamente en self._textbox.
+        tags = self.area_chat._textbox
 
         # Texto genérico
-        self.area_chat.tag_config('hora', foreground=t['texto_secundario'], font=('Segoe UI', 10))
-        self.area_chat.tag_config('historial_texto', foreground=t['historial'], font=('Segoe UI', 11, 'italic'))
-        self.area_chat.tag_config('busqueda', background=t['busqueda'], foreground='black')
-        self.area_chat.tag_config(
-            'divisor', foreground=t['texto_secundario'], font=('Segoe UI', 10, 'italic'),
+        tags.tag_config('hora', foreground=t['texto_secundario'], font=('Segoe UI', 13))
+        tags.tag_config('historial_texto', foreground=t['historial'], font=('Segoe UI', 14, 'italic'))
+        tags.tag_config('busqueda', background=t['busqueda'], foreground='black')
+        tags.tag_config(
+            'divisor', foreground=t['texto_secundario'], font=('Segoe UI', 13, 'italic'),
             justify=tk.CENTER
         )
-        self.area_chat.tag_config(
-            'marca_agua', foreground=t['historial'], font=('Lucida Console', 10),
+        tags.tag_config(
+            'marca_agua', foreground=t['historial'], font=('Lucida Console', 13),
             justify=tk.CENTER
         )
-        self.area_chat.tag_config(
-            'marca_agua_texto', foreground=t['texto_secundario'], font=('Segoe UI', 11, 'italic'),
+        tags.tag_config(
+            'marca_agua_texto', foreground=t['texto_secundario'], font=('Segoe UI', 14, 'italic'),
             justify=tk.CENTER
         )
-        self.area_chat.tag_config(
+        tags.tag_config(
             'server_texto', foreground=t['server'], background=t['server_fondo'],
-            font=('Segoe UI', 12), justify=tk.CENTER
+            font=('Segoe UI', 15), justify=tk.CENTER
         )
 
         # Burbujas: nombre / texto / hora por tipo de mensaje, con fondo propio
@@ -506,38 +593,38 @@ class ChatFrame(tk.Frame):
             'privado': t['privado'], 'archivo': t['archivo']
         }
         for clave, fondo in fondos.items():
-            self.area_chat.tag_config(
+            tags.tag_config(
                 f'nombre_{clave}', foreground=colores_nombre[clave], background=fondo,
-                font=('Segoe UI', 12, 'bold')
+                font=('Segoe UI', 15, 'bold')
             )
-            self.area_chat.tag_config(
+            tags.tag_config(
                 f'{clave}_texto', foreground=colores_texto[clave], background=fondo,
-                font=('Segoe UI', 12)
+                font=('Segoe UI', 15)
             )
-            self.area_chat.tag_config(
+            tags.tag_config(
                 f'hora_{clave}', foreground=t['texto_secundario'], background=fondo,
-                font=('Segoe UI', 10)
+                font=('Segoe UI', 13)
             )
 
         # Mensajes propios alineados a la derecha
-        self.area_chat.tag_config('derecha', justify=tk.RIGHT)
+        tags.tag_config('derecha', justify=tk.RIGHT)
 
     def _tag_avatar(self, nickname):
         tag_id = f'avatar_{nickname}'
         if tag_id not in self.tags_usuario:
-            self.area_chat.tag_config(tag_id, foreground=color_usuario(nickname))
+            self.area_chat._textbox.tag_config(tag_id, foreground=color_usuario(nickname))
             self.tags_usuario.add(tag_id)
         return tag_id
 
     def _mostrar_marca_agua(self):
-        self.area_chat.config(state=tk.NORMAL)
+        self.area_chat.configure(state=tk.NORMAL)
         self.area_chat.delete('1.0', tk.END)
         self.area_chat.insert(tk.END, '\n' * 3)
         for fila in MASCOTA_ASCII.split('\n'):
             self.area_chat.insert(tk.END, fila + '\n', 'marca_agua')
         self.area_chat.insert(tk.END, '\n')
         self.area_chat.insert(tk.END, 'Aún no hay mensajes en este chat\n', 'marca_agua_texto')
-        self.area_chat.config(state=tk.DISABLED)
+        self.area_chat.configure(state=tk.DISABLED)
         self._marca_agua_presente = True
 
     def _limpiar_marca_agua(self):
@@ -554,12 +641,60 @@ class ChatFrame(tk.Frame):
         self.entry_busqueda.delete(0, tk.END)
         self._quitar_resaltado_busqueda()
 
+    def _mostrar_selector_emoji(self):
+        ventana = ctk.CTkToplevel(self)
+        ventana.title('Emojis')
+        ventana.geometry('280x220')
+        ventana.resizable(False, False)
+        ventana.configure(fg_color=self.tema['panel'])
+        ventana.transient(self.winfo_toplevel())
+
+        columnas = 8
+        for i, emoji in enumerate(EMOJIS_COMUNES):
+            fila, columna = divmod(i, columnas)
+            ctk.CTkButton(
+                ventana, text=emoji, width=30, height=30, corner_radius=6,
+                fg_color='transparent', hover_color=self.tema['borde'],
+                text_color=self.tema['texto'], font=('Segoe UI', 14),
+                command=lambda e=emoji, v=ventana: self._insertar_emoji(e, v)
+            ).grid(row=fila, column=columna, padx=2, pady=2)
+
+    def _insertar_emoji(self, emoji, ventana):
+        self.entry_mensaje.insert(tk.INSERT, emoji)
+        ventana.destroy()
+        self.entry_mensaje.focus()
+
+    def _mostrar_selector_reaccion(self, event, id_mensaje):
+        if not self.conectado:
+            return
+        ventana = ctk.CTkToplevel(self)
+        ventana.title('Reaccionar')
+        ventana.resizable(False, False)
+        ventana.configure(fg_color=self.tema['panel'])
+        ventana.geometry(f'+{event.x_root}+{event.y_root}')
+        ventana.transient(self.winfo_toplevel())
+
+        for i, emoji in enumerate(REACCIONES_RAPIDAS):
+            ctk.CTkButton(
+                ventana, text=emoji, width=32, height=32, corner_radius=6,
+                fg_color='transparent', hover_color=self.tema['borde'],
+                text_color=self.tema['texto'], font=('Segoe UI', 14),
+                command=lambda e=emoji, v=ventana: self._enviar_reaccion(id_mensaje, e, v)
+            ).grid(row=0, column=i, padx=2, pady=2)
+
+    def _enviar_reaccion(self, id_mensaje, emoji, ventana):
+        ventana.destroy()
+        try:
+            enviar_reaccion(self.sock, id_mensaje, emoji)
+        except Exception:
+            pass
+
     def _buscar(self):
         self._quitar_resaltado_busqueda()
         texto = self.entry_busqueda.get().strip().lower()
         if not texto:
             return
-        self.area_chat.config(state=tk.NORMAL)
+        self.area_chat.configure(state=tk.NORMAL)
         inicio = '1.0'
         while True:
             pos = self.area_chat.search(texto, inicio, tk.END, nocase=1)
@@ -568,18 +703,15 @@ class ChatFrame(tk.Frame):
             fin = f'{pos}+{len(texto)}c'
             self.area_chat.tag_add('busqueda', pos, fin)
             inicio = fin
-        self.area_chat.config(state=tk.DISABLED)
+        self.area_chat.configure(state=tk.DISABLED)
 
     def _quitar_resaltado_busqueda(self):
         self.area_chat.tag_remove('busqueda', '1.0', tk.END)
 
-    def _seleccionar_usuario(self, event):
-        seleccion = self.lista_usuarios.curselection()
-        if seleccion:
-            usuario = self.lista_usuarios.get(seleccion[0])
-            if usuario != self.nickname:
-                self.combo_destinatario.set(usuario)
-                self.entry_mensaje.focus()
+    def _seleccionar_usuario(self, usuario):
+        if usuario != self.nickname:
+            self.combo_destinatario.set(usuario)
+            self.entry_mensaje.focus()
 
     def _on_typing(self, event):
         if not self.conectado:
@@ -593,8 +725,20 @@ class ChatFrame(tk.Frame):
             except Exception:
                 pass
 
-    def _agregar_burbuja(self, emisor, contenido, hora, tipo='msg', alinear='izquierda', extra=''):
-        self.area_chat.config(state=tk.NORMAL)
+    def _agregar_burbuja(self, emisor, contenido, hora, tipo='msg', alinear='izquierda', extra='',
+                          id_mensaje=None):
+        self.eventos_chat.append({
+            'emisor': emisor, 'contenido': contenido, 'hora': hora,
+            'tipo': tipo, 'extra': extra, 'id_mensaje': id_mensaje
+        })
+
+        reacciones_texto = ''
+        if id_mensaje is not None:
+            reacciones = self.reacciones_por_mensaje.get(id_mensaje)
+            if reacciones:
+                reacciones_texto = '  '.join(f'{emoji} {len(nicks)}' for emoji, nicks in reacciones.items())
+
+        self.area_chat.configure(state=tk.NORMAL)
         self._limpiar_marca_agua()
 
         if tipo == 'server':
@@ -647,12 +791,24 @@ class ChatFrame(tk.Frame):
             if extra:
                 self.area_chat.insert(tk.END, f'{extra}\n', tag_hora)
 
+            if reacciones_texto:
+                self.area_chat.insert(tk.END, f'{reacciones_texto}\n', tag_hora)
+
+            fin = self.area_chat.index(tk.END)
+
+            if id_mensaje is not None:
+                tag_mensaje = f'msg_{id_mensaje}'
+                self.area_chat.tag_add(tag_mensaje, inicio, fin)
+                self.area_chat._textbox.tag_bind(
+                    tag_mensaje, '<Button-3>',
+                    lambda e, i=id_mensaje: self._mostrar_selector_reaccion(e, i)
+                )
+
             if es_propio:
-                fin = self.area_chat.index(tk.END)
                 self.area_chat.tag_add('derecha', inicio, fin)
 
         self.area_chat.see(tk.END)
-        self.area_chat.config(state=tk.DISABLED)
+        self.area_chat.configure(state=tk.DISABLED)
 
     def _mostrar_preview_imagen(self, ruta, emisor):
         if not PIL_DISPONIBLE:
@@ -663,12 +819,15 @@ class ChatFrame(tk.Frame):
             photo = ImageTk.PhotoImage(img)
             self.imagenes.append(photo)
 
-            self.area_chat.config(state=tk.NORMAL)
+            self.area_chat.configure(state=tk.NORMAL)
             self.area_chat.insert(tk.END, f'[Imagen de {emisor}]\n', 'hora')
-            self.area_chat.image_create(tk.END, image=photo)
+            # CTkTextbox.image_create() está deshabilitado a propósito (por
+            # la misma razón que 'font' en tag_config); se usa el
+            # tkinter.Text real vía self._textbox, igual que en _configurar_tags.
+            self.area_chat._textbox.image_create(tk.END, image=photo)
             self.area_chat.insert(tk.END, '\n\n')
             self.area_chat.see(tk.END)
-            self.area_chat.config(state=tk.DISABLED)
+            self.area_chat.configure(state=tk.DISABLED)
             return True
         except Exception:
             return False
@@ -679,13 +838,13 @@ class ChatFrame(tk.Frame):
 
         if tipo == 'msg':
             emisor = mensaje.get('emisor')
-            self._agregar_burbuja(emisor, mensaje['contenido'], hora, 'msg')
+            self._agregar_burbuja(emisor, mensaje['contenido'], hora, 'msg', id_mensaje=mensaje.get('id'))
             if emisor != self.nickname:
                 reproducir_beep()
 
         elif tipo == 'priv':
             emisor = mensaje.get('emisor')
-            self._agregar_burbuja(emisor, mensaje['contenido'], hora, 'priv')
+            self._agregar_burbuja(emisor, mensaje['contenido'], hora, 'priv', id_mensaje=mensaje.get('id'))
             if emisor != self.nickname:
                 reproducir_beep()
 
@@ -709,7 +868,10 @@ class ChatFrame(tk.Frame):
                 reproducir_beep()
             else:
                 extra = f'Enviado a {mensaje.get("destinatario", "todos")}'
-            self._agregar_burbuja(emisor, f'Archivo: {nombre}', hora, 'archivo', extra=extra)
+            self._agregar_burbuja(emisor, f'Archivo: {nombre}', hora, 'archivo', extra=extra, id_mensaje=mensaje.get('id'))
+
+        elif tipo == 'reaccion':
+            self._registrar_reaccion(mensaje.get('id_mensaje'), mensaje.get('emisor'), mensaje.get('emoji'))
 
         elif tipo == 'typing':
             emisor = mensaje.get('emisor')
@@ -725,21 +887,69 @@ class ChatFrame(tk.Frame):
         elif tipo == 'error':
             self._agregar_burbuja('', f'Error: {mensaje.get("contenido")}', '', 'server')
 
+    def _registrar_reaccion(self, id_mensaje, emisor, emoji):
+        if id_mensaje is None or not emoji:
+            return
+        reacciones = self.reacciones_por_mensaje.setdefault(id_mensaje, {})
+        for usuarios in reacciones.values():
+            usuarios.discard(emisor)
+        reacciones.setdefault(emoji, set()).add(emisor)
+        self.reacciones_por_mensaje[id_mensaje] = {e: u for e, u in reacciones.items() if u}
+        self._redibujar_chat()
+
+    def _redibujar_chat(self):
+        pegado_abajo = self.area_chat.yview()[1] >= 0.999
+        fraccion_scroll = self.area_chat.yview()[0]
+
+        self.area_chat.configure(state=tk.NORMAL)
+        self.area_chat.delete('1.0', tk.END)
+        self.area_chat.configure(state=tk.DISABLED)
+        self._marca_agua_presente = False
+        self._historial_mostrado = False
+
+        eventos = self.eventos_chat
+        self.eventos_chat = []  # se vuelve a poblar solo al reinsertar cada burbuja
+
+        if not eventos:
+            self._mostrar_marca_agua()
+        else:
+            for ev in eventos:
+                self._agregar_burbuja(
+                    ev['emisor'], ev['contenido'], ev['hora'], ev['tipo'],
+                    extra=ev['extra'], id_mensaje=ev['id_mensaje']
+                )
+            # Nota: los previews de imagen embebidos (_mostrar_preview_imagen)
+            # no se re-insertan en un redibujado -- se pierde el thumbnail
+            # inline, pero el texto "Archivo: nombre / Guardado en: ruta"
+            # se mantiene y el archivo sigue disponible en esa ruta.
+
+        if pegado_abajo:
+            self.area_chat.see(tk.END)
+        else:
+            self.area_chat.yview_moveto(fraccion_scroll)
+
     def _mostrar_typing(self, emisor):
-        self.label_typing.config(text=f'{emisor} está escribiendo...')
-        self.root.after(3000, lambda: self.label_typing.config(text=''))
+        self.label_typing.configure(text=f'{emisor} está escribiendo...')
+        self.root.after(3000, lambda: self.label_typing.configure(text=''))
 
     def _actualizar_usuarios(self, usuarios):
-        self.lista_usuarios.delete(0, tk.END)
+        for fila in self.lista_usuarios.winfo_children():
+            fila.destroy()
+
         valores = ['Todos']
-        for i, u in enumerate(usuarios):
+        for u in usuarios:
             simbolo = '●' if u != self.nickname else '● (tú)'
-            self.lista_usuarios.insert(tk.END, f'{simbolo} {u}')
-            self.lista_usuarios.itemconfig(i, fg=self.tema['online'])
+            ctk.CTkButton(
+                self.lista_usuarios, text=f'{simbolo} {u}', anchor='w',
+                fg_color='transparent', hover_color=self.tema['borde'],
+                text_color=self.tema['online'], font=('Segoe UI', 15),
+                corner_radius=8, height=32,
+                command=lambda u=u: self._seleccionar_usuario(u)
+            ).pack(fill=tk.X, pady=2)
             if u != self.nickname:
                 valores.append(u)
-        self.combo_destinatario['values'] = valores
-        self.label_titulo.config(text=f'👾 Chat con Sockets - {len(usuarios)} en línea')
+        self.combo_destinatario.configure(values=valores)
+        self.label_titulo.configure(text=f'👾 Chat con Sockets - {len(usuarios)} en línea')
 
     def _enviar_mensaje(self):
         texto = self.entry_mensaje.get().strip()
@@ -821,14 +1031,8 @@ class ChatGUI:
         except Exception:
             pass
 
-        configurar_estilo_ttk(self.tema)
-        self.root.option_add('*TCombobox*Listbox.background', self.tema['entrada'])
-        self.root.option_add('*TCombobox*Listbox.foreground', self.tema['texto'])
-        self.root.option_add('*TCombobox*Listbox.selectBackground', self.tema['acento'])
-        self.root.option_add('*TCombobox*Listbox.selectForeground', 'white')
-
         self.login_frame = LoginFrame(
-            self.root, self.tema, self._conectar
+            self.root, self.tema, self._conectar, self._cambiar_tema
         )
         self.login_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -837,6 +1041,13 @@ class ChatGUI:
         self.root.protocol('WM_DELETE_WINDOW', self._salir)
         self.root.bind('<Escape>', lambda e: self._salir())
         self.root.bind('<Control-l>', lambda e: self._limpiar_chat())
+
+    def _cambiar_tema(self):
+        self.tema = TEMA_CLARO if self.tema is TEMA_OSCURO else TEMA_OSCURO
+        if self.login_frame:
+            self.login_frame._aplicar_tema(self.tema)
+        if self.chat_frame:
+            self.chat_frame._aplicar_tema(self.tema)
 
     def _limpiar_chat(self):
         if self.chat_frame:
@@ -865,7 +1076,7 @@ class ChatGUI:
         self.login_frame.pack_forget()
 
         self.chat_frame = ChatFrame(
-            self.root, self.tema, self._desconectar, ip=ip, puerto=puerto
+            self.root, self.tema, self._desconectar, self._cambiar_tema, ip=ip, puerto=puerto
         )
         self.chat_frame.sock = self.sock
         self.chat_frame.nickname = nickname
@@ -889,7 +1100,7 @@ class ChatGUI:
         if self.chat_frame:
             self.chat_frame.pack_forget()
             self.chat_frame = None
-        self.login_frame = LoginFrame(self.root, self.tema, self._conectar)
+        self.login_frame = LoginFrame(self.root, self.tema, self._conectar, self._cambiar_tema)
         self.login_frame.pack(fill=tk.BOTH, expand=True)
 
     def _salir(self):
@@ -899,7 +1110,9 @@ class ChatGUI:
 
 
 def main():
-    root = tk.Tk()
+    ctk.set_appearance_mode('dark')
+    ctk.set_widget_scaling(1.0)
+    root = ctk.CTk()
     app = ChatGUI(root)
     root.mainloop()
 
