@@ -14,7 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cliente.cliente_chat import (
     conectar, recibir, enviar_nickname, enviar_mensaje_publico,
     enviar_mensaje_privado, solicitar_lista, enviar_archivo,
-    enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES, enviar_reaccion
+    enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES, enviar_reaccion,
+    crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
+    es_mencionado
 )
 
 REACCIONES_RAPIDAS = ['👍', '❤️', '😂', '😮', '😢', '🙏']
@@ -46,7 +48,11 @@ TEMA_OSCURO = {
     'archivo': '#ff6b6e',
     'archivo_fondo': '#4a2c2e',
     'online': '#3ddc84',
-    'busqueda': '#fee75c'
+    'busqueda': '#fee75c',
+    'mencion': '#ffe066',
+    'mencion_fondo': '#4a3f14',
+    'grupo': '#6fd7a8',
+    'grupo_fondo': '#223b30'
 }
 
 TEMA_CLARO = {
@@ -70,12 +76,21 @@ TEMA_CLARO = {
     'archivo': '#c62828',
     'archivo_fondo': '#fbe4e4',
     'online': '#23a55a',
-    'busqueda': '#fee75c'
+    'busqueda': '#fee75c',
+    'mencion': '#8a6d00',
+    'mencion_fondo': '#fff3c4',
+    'grupo': '#2f6f4f',
+    'grupo_fondo': '#e1f3e8'
 }
 
+# Ordenada por matiz (rueda de color: rojo -> naranja -> amarillo -> verde ->
+# celeste -> azul -> violeta -> rosa) para que el selector de color del login
+# se vea como un degradé prolijo en vez de una mezcla al azar.
 PALETA_USUARIOS = [
-    '#f783ac', '#74c0fc', '#ffd43b', '#69db7c',
-    '#da77f2', '#4dabf7', '#ff922b', '#63e6be'
+    '#ff6b6b', '#ff922b', '#ffa94d', '#ffd43b',
+    '#a9e34b', '#69db7c', '#63e6be', '#3bc9db',
+    '#4dabf7', '#74c0fc', '#748ffc', '#9775fa',
+    '#da77f2', '#f783ac'
 ]
 
 
@@ -84,22 +99,18 @@ def color_usuario(nickname):
     return PALETA_USUARIOS[indice]
 
 AVATARES_DISPONIBLES = [
-    'circulo', 'anillo', 'cuadrado', 'diamante', 'rayas', 'estrella',
-    'triangulo', 'cruz', 'luna', 'corazon', 'reloj_arena', 'hexagono'
+    'circulo', 'anillo', 'diamante', 'rayas', 'estrella', 'triangulo',
+    'cruz', 'luna', 'corazon', 'reloj_arena',
+    'ojo', 'trebol', 'sol', 'flecha', 'rayo', 'equis', 'gota', 'reloj'
 ]
+
+AVATARES_GRUPO_DISPONIBLES = ['gente', 'casa', 'bandera', 'engranaje', 'nube', 'escudo']
 
 
 def _es_pixel_avatar(patron, dx, dy, radio):
     dist = math.sqrt(dx * dx + dy * dy)
     if patron == 'anillo':
         return radio - 3 <= dist <= radio
-    if patron == 'cuadrado':
-        borde = radio - 1
-        if abs(dx) > borde or abs(dy) > borde:
-            return False
-        if abs(dx) > borde - 3 and abs(dy) > borde - 3:
-            return math.sqrt((abs(dx) - (borde - 3)) ** 2 + (abs(dy) - (borde - 3)) ** 2) <= 3
-        return True
     if patron == 'diamante':
         return abs(dx) + abs(dy) <= radio
     if patron == 'rayas':
@@ -128,8 +139,83 @@ def _es_pixel_avatar(patron, dx, dy, radio):
         return en_lobulos or en_triangulo
     if patron == 'reloj_arena':
         return abs(dx) <= abs(dy) and dist <= radio * 1.5
-    if patron == 'hexagono':
-        return abs(dy) <= radio * 0.87 and abs(dx) <= radio - abs(dy) / 1.73
+    if patron == 'ojo':
+        cy = radio * 0.9
+        r = radio * 1.3
+        return math.sqrt(dx * dx + (dy + cy) ** 2) <= r and math.sqrt(dx * dx + (dy - cy) ** 2) <= r
+    if patron == 'trebol':
+        offset = radio * 0.62
+        r = radio * 0.42
+        centros = [(0, -offset), (offset * 0.87, offset * 0.5), (-offset * 0.87, offset * 0.5)]
+        return any(math.sqrt((dx - cx) ** 2 + (dy - cy) ** 2) <= r for cx, cy in centros)
+    if patron == 'sol':
+        nucleo = dist <= radio * 0.4
+        angulo = math.atan2(dy, dx) if (dx, dy) != (0, 0) else 0
+        cerca_rayo = min(abs((angulo - k * math.pi / 4 + math.pi) % (2 * math.pi) - math.pi) for k in range(8)) < 0.18
+        return nucleo or (cerca_rayo and dist <= radio)
+    if patron == 'flecha':
+        base_ancho = radio * 0.75
+        if dy > radio * 0.1:
+            return abs(dx) <= radio * 0.28 and dy <= radio
+        return abs(dx) <= base_ancho * (dy + radio) / (radio + radio * 0.1)
+    if patron == 'rayo':
+        if dy <= -radio * 0.1:
+            t = (dy + radio) / (radio - radio * 0.1)
+            centro_rayo = radio * 0.6 + t * (-radio * 0.5 - radio * 0.6)
+        elif dy <= radio * 0.1:
+            t = (dy + radio * 0.1) / (radio * 0.2)
+            centro_rayo = -radio * 0.5 + t * (radio * 0.25 - (-radio * 0.5))
+        else:
+            t = (dy - radio * 0.1) / (radio - radio * 0.1)
+            centro_rayo = radio * 0.25 + t * (-radio * 0.65 - radio * 0.25)
+        return abs(dx - centro_rayo) <= radio * 0.16 and dist <= radio * 1.25
+    if patron == 'equis':
+        grosor = radio * 0.32
+        return (abs(dx - dy) <= grosor or abs(dx + dy) <= grosor) and dist <= radio
+    if patron == 'gota':
+        cy0 = radio * 0.3
+        r0 = radio * 0.62
+        y_punta = cy0 - r0 * 0.75
+        ancho_base_punta = math.sqrt(max(r0 * r0 - (y_punta - cy0) ** 2, 0))
+        if dy < y_punta:
+            t = max((dy - (-radio)) / (y_punta - (-radio)), 0)
+            return abs(dx) <= t * ancho_base_punta and dy >= -radio
+        return math.sqrt(dx * dx + (dy - cy0) ** 2) <= r0
+    if patron == 'reloj':
+        anillo_reloj = radio - 1.5 <= dist <= radio
+        aguja_min = abs(dx) <= 0.6 and -radio * 0.55 <= dy <= 0
+        aguja_hor = abs(dy) <= 0.6 and 0 <= dx <= radio * 0.4
+        return anillo_reloj or aguja_min or aguja_hor
+    if patron == 'gente':
+        rp = radio * 0.5
+        offset = radio * 0.62
+        return math.sqrt((dx + offset) ** 2 + dy * dy) <= rp or math.sqrt((dx - offset) ** 2 + dy * dy) <= rp
+    if patron == 'casa':
+        base_ancho = radio * 0.75
+        if dy > 0:
+            return abs(dx) <= base_ancho and dy <= radio
+        return abs(dx) <= base_ancho * (dy + radio) / radio
+    if patron == 'bandera':
+        polex = -radio * 0.55
+        pole = abs(dx - polex) <= radio * 0.14 and -radio <= dy <= radio
+        flag = (-radio <= dy <= -radio * 0.1) and (dx >= polex) and (dx <= polex + radio * 1.1)
+        return pole or flag
+    if patron == 'engranaje':
+        r0 = radio * 0.55
+        angulo = math.atan2(dy, dx) if (dx, dy) != (0, 0) else 0
+        diente = 1.0 if math.cos(8 * angulo) > 0.2 else 0.0
+        radio_borde = r0 + (radio - r0) * diente
+        return dist <= radio_borde
+    if patron == 'nube':
+        c1 = math.sqrt((dx + radio * 0.5) ** 2 + (dy + radio * 0.05) ** 2) <= radio * 0.5
+        c2 = math.sqrt(dx * dx + (dy - radio * 0.25) ** 2) <= radio * 0.62
+        c3 = math.sqrt((dx - radio * 0.5) ** 2 + (dy + radio * 0.05) ** 2) <= radio * 0.5
+        base = abs(dx) <= radio * 0.8 and 0 <= dy <= radio * 0.35
+        return (c1 or c2 or c3 or base) and dy <= radio * 0.4
+    if patron == 'escudo':
+        if dy <= 0:
+            return dist <= radio
+        return abs(dx) <= radio * (radio - dy) / radio and dy <= radio
     return dist <= radio  # 'circulo' y cualquier valor desconocido caen al círculo relleno
 
 
@@ -160,12 +246,16 @@ MASCOTA_ASCII = (
 )
 
 
-def reproducir_beep():
+def reproducir_beep(mencion=False):
     try:
         if sys.platform == 'win32':
             import winsound
-            winsound.PlaySound(r'C:\Windows\Media\Windows Pop-up Blocked.wav',
-                                winsound.SND_FILENAME | winsound.SND_ASYNC)
+            if mencion:
+                winsound.PlaySound(r'C:\Windows\Media\Windows Notify Messaging.wav',
+                                    winsound.SND_FILENAME | winsound.SND_ASYNC)
+            else:
+                winsound.PlaySound(r'C:\Windows\Media\Windows Pop-up Blocked.wav',
+                                    winsound.SND_FILENAME | winsound.SND_ASYNC)
     except Exception:
         pass
 
@@ -216,6 +306,8 @@ class LoginFrame(ctk.CTkFrame):
         self.avatar_elegido = 'circulo'
         self.botones_avatar = {}
         self.imagenes_selector = {}
+        self.color_elegido = None
+        self.botones_color = {}
         self._construir()
 
     def _construir(self):
@@ -283,6 +375,20 @@ class LoginFrame(ctk.CTkFrame):
 
         self.entries['entry_nick'].focus()
 
+        self.boton_conectar = ctk.CTkButton(
+            self.frame_central, text='Conectar al chat', command=self._intentar_conectar,
+            fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
+            text_color='white', width=300, height=48, corner_radius=12,
+            font=('Segoe UI', 14, 'bold')
+        )
+        self.boton_conectar.pack(pady=(20, 0))
+
+        self.label_error = ctk.CTkLabel(
+            self.frame_central, text='', text_color='#ed4245',
+            fg_color='transparent', font=('Segoe UI', 12)
+        )
+        self.label_error.pack(pady=(10, 0))
+
         self.label_avatar = ctk.CTkLabel(
             self.frame_central, text='Foto de perfil', fg_color='transparent',
             text_color=self.tema['texto_secundario'],
@@ -312,19 +418,33 @@ class LoginFrame(ctk.CTkFrame):
 
         self._elegir_avatar(self.avatar_elegido)
 
-        self.boton_conectar = ctk.CTkButton(
-            self.frame_central, text='Conectar al chat', command=self._intentar_conectar,
-            fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
-            text_color='white', width=300, height=48, corner_radius=12,
-            font=('Segoe UI', 14, 'bold')
+        self.label_color = ctk.CTkLabel(
+            self.frame_central, text='Color de perfil', fg_color='transparent',
+            text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 13), anchor='w'
         )
-        self.boton_conectar.pack(pady=(24, 0))
+        self.label_color.pack(fill=tk.X, pady=(12, 6))
+        self.labels_secundarios.append(self.label_color)
 
-        self.label_error = ctk.CTkLabel(
-            self.frame_central, text='', text_color='#ed4245',
-            fg_color='transparent', font=('Segoe UI', 12)
+        # Fila única con scroll horizontal -- a diferencia de la grilla de
+        # avatares, acá no queremos que los colores salten a una segunda
+        # fila por más que se agreguen más adelante.
+        self.frame_colores = ctk.CTkScrollableFrame(
+            self.frame_central, orientation='horizontal', fg_color='transparent',
+            height=48, width=300,
+            scrollbar_button_color=self.tema['borde'], scrollbar_button_hover_color=self.tema['acento']
         )
-        self.label_error.pack(pady=(10, 0))
+        self.frame_colores.pack(fill=tk.X)
+
+        for color_hex in PALETA_USUARIOS:
+            boton = ctk.CTkButton(
+                self.frame_colores, text='', width=32, height=32,
+                corner_radius=16, fg_color=color_hex, hover_color=color_hex,
+                border_width=0, border_color=self.tema['texto'],
+                command=lambda c=color_hex: self._elegir_color(c)
+            )
+            boton.pack(side=tk.LEFT, padx=3, pady=3)
+            self.botones_color[color_hex] = boton
 
         self.label_pie = ctk.CTkLabel(
             self.frame_central, text='Sockets TCP · Sistemas Operativos',
@@ -349,6 +469,11 @@ class LoginFrame(ctk.CTkFrame):
             else:
                 boton.configure(border_width=0)
 
+    def _elegir_color(self, color_hex):
+        self.color_elegido = color_hex
+        for c, boton in self.botones_color.items():
+            boton.configure(border_width=3 if c == color_hex else 0)
+
     def _aplicar_tema(self, tema):
         self.tema = tema
         self.configure(fg_color=tema['fondo'])
@@ -371,6 +496,17 @@ class LoginFrame(ctk.CTkFrame):
             self.imagenes_selector[patron] = imagen
             boton.configure(image=imagen, fg_color=tema['entrada'], hover_color=tema['borde'],
                              border_color=tema['acento'])
+        # CTkScrollableFrame.configure() solo recalcula su color de fondo
+        # cuando el kwarg 'fg_color' está presente en la llamada (aunque el
+        # valor no cambie) -- un cascade genérico de bg_color desde el padre
+        # (que sí sirve para CTkFrame/CTkLabel normales) no le hace nada,
+        # por eso quedaba con el color del tema viejo al cambiar de modo.
+        self.frame_colores.configure(
+            fg_color='transparent',
+            scrollbar_button_color=tema['borde'], scrollbar_button_hover_color=tema['acento']
+        )
+        for boton in self.botones_color.values():
+            boton.configure(border_color=tema['texto'])
         self.boton_conectar.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
         ctk.set_appearance_mode('light' if tema['nombre'] == 'claro' else 'dark')
 
@@ -389,7 +525,8 @@ class LoginFrame(ctk.CTkFrame):
             self.label_error.configure(text='El nickname no puede estar vacío.')
             return
 
-        self.on_conectar(ip, puerto, nickname, self.avatar_elegido)
+        color = self.color_elegido or color_usuario(nickname)
+        self.on_conectar(ip, puerto, nickname, self.avatar_elegido, color)
 
     def mostrar_error(self, mensaje):
         self.label_error.configure(text=mensaje)
@@ -412,8 +549,10 @@ class ChatFrame(ctk.CTkFrame):
         self.ultimo_typing = 0
         self.imagenes = []  # Referencias para evitar que se borren
         self.avatares_usuarios = {}  # nickname -> patron de avatar elegido
+        self.colores_usuarios = {}  # nickname -> color de perfil elegido (hex)
         self.cache_avatares = {}  # (nickname, patron, tamano) -> PhotoImage generado
         self.usuarios_actuales = []  # últimos nicknames conectados recibidos
+        self.grupos = {}  # nombre -> {'miembros': [...], 'creador': .., 'avatar': ..}
         self.eventos_chat = []  # registro de cada burbuja mostrada, para poder re-dibujar el chat completo
         self.reacciones_por_mensaje = {}  # id_mensaje -> {emoji: set(nicknames)}
         self._marca_agua_presente = False
@@ -491,20 +630,48 @@ class ChatFrame(ctk.CTkFrame):
         # Panel de usuarios (se crea antes que el área de chat para que Tk
         # no corrompa el primer carácter del título al dibujarlo después
         # del widget Text con scrollbar)
-        self.frame_usuarios = tk.Frame(self.frame_central, bg=self.tema['panel'], width=225)
+        self.frame_usuarios = tk.Frame(self.frame_central, bg=self.tema['panel'], width=340)
         self.frame_usuarios.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 10), pady=10)
         self.frame_usuarios.pack_propagate(False)
+
+        self.boton_chat_general = ctk.CTkButton(
+            self.frame_usuarios, text='💬 Chat general', anchor='w',
+            fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
+            text_color='white', font=('Segoe UI', 14, 'bold'),
+            corner_radius=8, height=34, command=self._ir_a_chat_general
+        )
+        self.boton_chat_general.pack(fill=tk.X, padx=12, pady=(15, 5))
 
         self.label_usuarios = ctk.CTkLabel(
             self.frame_usuarios, text='USUARIOS EN LÍNEA', fg_color='transparent',
             text_color=self.tema['texto_secundario'], font=('Segoe UI', 13, 'bold')
         )
-        self.label_usuarios.pack(anchor='w', padx=12, pady=(15, 5))
+        self.label_usuarios.pack(anchor='w', padx=12, pady=(12, 5))
 
         self.lista_usuarios = ctk.CTkScrollableFrame(
             self.frame_usuarios, fg_color=self.tema['panel'], corner_radius=0
         )
         self.lista_usuarios.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        self.frame_grupos_header = ctk.CTkFrame(self.frame_usuarios, fg_color='transparent')
+        self.frame_grupos_header.pack(fill=tk.X, padx=12, pady=(10, 0))
+        self.label_grupos = ctk.CTkLabel(
+            self.frame_grupos_header, text='GRUPOS', fg_color='transparent',
+            text_color=self.tema['texto_secundario'], font=('Segoe UI', 13, 'bold')
+        )
+        self.label_grupos.pack(side=tk.LEFT)
+        self.boton_crear_grupo = ctk.CTkButton(
+            self.frame_grupos_header, text='＋ Crear', width=60, height=22,
+            fg_color='transparent', hover_color=self.tema['borde'],
+            text_color=self.tema['acento'], font=('Segoe UI', 12, 'bold'),
+            corner_radius=6, command=self._mostrar_crear_grupo
+        )
+        self.boton_crear_grupo.pack(side=tk.RIGHT)
+
+        self.lista_grupos = ctk.CTkScrollableFrame(
+            self.frame_usuarios, fg_color=self.tema['panel'], corner_radius=0
+        )
+        self.lista_grupos.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         # Área de chat
         self.frame_chat = tk.Frame(self.frame_central, bg=self.tema['fondo'])
@@ -582,7 +749,7 @@ class ChatFrame(ctk.CTkFrame):
             border_color=self.tema['borde'], button_color=self.tema['borde'],
             button_hover_color=self.tema['acento'],
             dropdown_fg_color=self.tema['entrada'], dropdown_text_color=self.tema['texto'],
-            font=('Segoe UI', 14)
+            font=('Segoe UI', 14), command=self._cambiar_vista
         )
         self.combo_destinatario.set('Todos')
         self.combo_destinatario.pack(side=tk.LEFT, padx=5)
@@ -645,8 +812,20 @@ class ChatFrame(ctk.CTkFrame):
         self.entry_busqueda.configure(fg_color=tema['entrada'], text_color=tema['texto'], border_color=tema['borde'])
         self.frame_central.configure(bg=tema['fondo'])
         self.frame_usuarios.configure(bg=tema['panel'])
-        self.label_usuarios.configure(text_color=tema['texto_secundario'])
+        self.boton_chat_general.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
+        # label_usuarios y frame_grupos_header tienen fg_color='transparent', lo que
+        # internamente los pinta con su propio bg_color en vez de ser realmente
+        # invisibles. Como su padre (frame_usuarios) es un tk.Frame común y no un
+        # widget CTk, el mecanismo automático de CTk que propaga bg_color desde el
+        # padre solo engancha si se llama a master.config() -- acá se usa .configure()
+        # en todos lados, así que nunca se dispara y quedan con el color del tema
+        # viejo. Hay que fijarles el bg_color a mano en cada cambio de tema.
+        self.label_usuarios.configure(bg_color=tema['panel'], text_color=tema['texto_secundario'])
         self.lista_usuarios.configure(fg_color=tema['panel'])
+        self.frame_grupos_header.configure(bg_color=tema['panel'])
+        self.label_grupos.configure(bg_color=tema['panel'], text_color=tema['texto_secundario'])
+        self.boton_crear_grupo.configure(bg_color=tema['panel'], hover_color=tema['borde'], text_color=tema['acento'])
+        self.lista_grupos.configure(fg_color=tema['panel'])
         self.frame_chat.configure(bg=tema['fondo'])
         self.area_chat.configure(fg_color=tema['fondo'], text_color=tema['texto'], border_color=tema['borde'])
         self.label_typing.configure(text_color=tema['texto_secundario'])
@@ -670,6 +849,13 @@ class ChatFrame(ctk.CTkFrame):
         self._configurar_tags()
         self.cache_avatares.clear()
         self._actualizar_usuarios(self.usuarios_actuales)
+        self._actualizar_grupos()
+        # Las burbujas ya insertadas en el chat tienen imágenes de avatar
+        # embebidas (image_create) que apuntan a los PhotoImage que se
+        # acaban de limpiar de cache_avatares -- sin este redibujado,
+        # esas referencias quedan colgando (se recolectan como basura) y
+        # las fotos de perfil ya mostradas en el chat desaparecen.
+        self._redibujar_chat()
 
         ctk.set_appearance_mode('light' if tema['nombre'] == 'claro' else 'dark')
 
@@ -705,15 +891,18 @@ class ChatFrame(ctk.CTkFrame):
         # Burbujas: nombre / texto / hora por tipo de mensaje, con fondo propio
         fondos = {
             'propio': t['propio_fondo'], 'otro': t['otros_fondo'],
-            'privado': t['privado_fondo'], 'archivo': t['archivo_fondo']
+            'privado': t['privado_fondo'], 'archivo': t['archivo_fondo'],
+            'mencion': t['mencion_fondo'], 'grupo': t['grupo_fondo']
         }
         colores_nombre = {
             'propio': t['propio'], 'otro': t['texto'],
-            'privado': t['texto'], 'archivo': t['texto']
+            'privado': t['texto'], 'archivo': t['texto'],
+            'mencion': t['mencion'], 'grupo': t['grupo']
         }
         colores_texto = {
             'propio': t['propio'], 'otro': t['texto'],
-            'privado': t['privado'], 'archivo': t['archivo']
+            'privado': t['privado'], 'archivo': t['archivo'],
+            'mencion': t['mencion'], 'grupo': t['grupo']
         }
         for clave, fondo in fondos.items():
             tags.tag_config(
@@ -734,10 +923,20 @@ class ChatFrame(ctk.CTkFrame):
 
     def _obtener_avatar(self, nickname, tamano):
         patron = self.avatares_usuarios.get(nickname, 'circulo')
-        clave = (nickname, patron, tamano)
+        color = self.colores_usuarios.get(nickname) or color_usuario(nickname)
+        clave = (nickname, patron, tamano, color)
         if clave not in self.cache_avatares:
             self.cache_avatares[clave] = generar_avatar(
-                patron, color_usuario(nickname), self.tema['panel'], tamano_px=tamano
+                patron, color, self.tema['panel'], tamano_px=tamano
+            )
+        return self.cache_avatares[clave]
+
+    def _obtener_avatar_grupo(self, nombre_grupo, tamano):
+        patron = self.grupos.get(nombre_grupo, {}).get('avatar', 'gente')
+        clave = (nombre_grupo, patron, tamano)
+        if clave not in self.cache_avatares:
+            self.cache_avatares[clave] = generar_avatar(
+                patron, color_usuario(nombre_grupo), self.tema['panel'], tamano_px=tamano
             )
         return self.cache_avatares[clave]
 
@@ -789,6 +988,146 @@ class ChatFrame(ctk.CTkFrame):
         ventana.destroy()
         self.entry_mensaje.focus()
 
+    def _mostrar_crear_grupo(self):
+        if not any(u != self.nickname for u in self.usuarios_actuales):
+            messagebox.showinfo('Crear grupo', 'No hay otros usuarios conectados para invitar.')
+            return
+
+        ventana = ctk.CTkToplevel(self)
+        ventana.title('Crear grupo')
+        ventana.resizable(False, False)
+        ventana.configure(fg_color=self.tema['panel'])
+        ventana.transient(self.winfo_toplevel())
+
+        ctk.CTkLabel(
+            ventana, text='Nombre del grupo', text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 12), anchor='w'
+        ).pack(fill=tk.X, padx=16, pady=(14, 2))
+        entry_nombre = ctk.CTkEntry(
+            ventana, width=300, fg_color=self.tema['entrada'], text_color=self.tema['texto'],
+            border_color=self.tema['borde'], border_width=1, corner_radius=8, font=('Segoe UI', 14)
+        )
+        entry_nombre.pack(fill=tk.X, padx=16)
+        entry_nombre.focus()
+
+        ctk.CTkLabel(
+            ventana, text='Ícono', text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 12), anchor='w'
+        ).pack(fill=tk.X, padx=16, pady=(12, 2))
+        frame_iconos = ctk.CTkFrame(ventana, fg_color='transparent')
+        frame_iconos.pack(padx=16)
+
+        estado = {'avatar': AVATARES_GRUPO_DISPONIBLES[0]}
+        botones_icono = {}
+
+        def elegir_icono(patron):
+            estado['avatar'] = patron
+            for p, b in botones_icono.items():
+                b.configure(border_width=3 if p == patron else 0)
+
+        for i, patron in enumerate(AVATARES_GRUPO_DISPONIBLES):
+            img = generar_avatar(patron, self.tema['texto_secundario'], self.tema['entrada'], tamano_px=32)
+            boton = ctk.CTkButton(
+                frame_iconos, text='', image=img, width=38, height=38, corner_radius=19,
+                fg_color=self.tema['entrada'], hover_color=self.tema['borde'],
+                border_width=0, border_color=self.tema['acento'],
+                command=lambda p=patron: elegir_icono(p)
+            )
+            boton.grid(row=0, column=i, padx=3)
+            botones_icono[patron] = boton
+        elegir_icono(estado['avatar'])
+
+        ctk.CTkLabel(
+            ventana, text='Invitar a', text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 12), anchor='w'
+        ).pack(fill=tk.X, padx=16, pady=(12, 2))
+        frame_checks = ctk.CTkScrollableFrame(ventana, width=300, fg_color=self.tema['entrada'], height=130)
+        frame_checks.pack(fill=tk.X, padx=16)
+
+        checks = {}
+        for u in self.usuarios_actuales:
+            if u == self.nickname:
+                continue
+            var = tk.BooleanVar(value=False)
+            ctk.CTkCheckBox(
+                frame_checks, text=u, variable=var, text_color=self.tema['texto'],
+                fg_color=self.tema['acento'], font=('Segoe UI', 13)
+            ).pack(anchor='w', pady=2)
+            checks[u] = var
+
+        label_error = ctk.CTkLabel(ventana, text='', text_color='#ed4245', font=('Segoe UI', 11))
+        label_error.pack(pady=(6, 0))
+
+        def confirmar():
+            nombre = entry_nombre.get().strip()
+            miembros = [u for u, var in checks.items() if var.get()]
+            if not nombre:
+                label_error.configure(text='Poné un nombre para el grupo.')
+                return
+            if not miembros:
+                label_error.configure(text='Elegí al menos un miembro.')
+                return
+            crear_grupo(self.sock, nombre, miembros, estado['avatar'])
+            ventana.destroy()
+
+        ctk.CTkButton(
+            ventana, text='Crear', command=confirmar,
+            fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
+            text_color='white', height=36, corner_radius=8, font=('Segoe UI', 13, 'bold')
+        ).pack(fill=tk.X, padx=16, pady=(10, 16))
+
+    def _mostrar_invitar_grupo(self, nombre_grupo):
+        info = self.grupos.get(nombre_grupo)
+        if not info:
+            return
+        candidatos = [
+            u for u in self.usuarios_actuales
+            if u != self.nickname and u not in info['miembros']
+        ]
+        if not candidatos:
+            messagebox.showinfo('Invitar', 'No hay usuarios conectados para invitar a este grupo.')
+            return
+
+        ventana = ctk.CTkToplevel(self)
+        ventana.title(f'Invitar a {nombre_grupo}')
+        ventana.resizable(False, False)
+        ventana.configure(fg_color=self.tema['panel'])
+        ventana.transient(self.winfo_toplevel())
+
+        ctk.CTkLabel(
+            ventana, text=f'Invitar a "{nombre_grupo}"', text_color=self.tema['texto'],
+            font=('Segoe UI', 14, 'bold')
+        ).pack(padx=16, pady=(16, 8))
+
+        frame_checks = ctk.CTkScrollableFrame(ventana, width=260, fg_color=self.tema['entrada'], height=170)
+        frame_checks.pack(fill=tk.X, padx=16)
+
+        checks = {}
+        for u in candidatos:
+            var = tk.BooleanVar(value=False)
+            ctk.CTkCheckBox(
+                frame_checks, text=u, variable=var, text_color=self.tema['texto'],
+                fg_color=self.tema['acento'], font=('Segoe UI', 13)
+            ).pack(anchor='w', pady=2)
+            checks[u] = var
+
+        label_error = ctk.CTkLabel(ventana, text='', text_color='#ed4245', font=('Segoe UI', 11))
+        label_error.pack(pady=(6, 0))
+
+        def confirmar():
+            miembros = [u for u, var in checks.items() if var.get()]
+            if not miembros:
+                label_error.configure(text='Elegí al menos un usuario.')
+                return
+            invitar_a_grupo(self.sock, nombre_grupo, miembros)
+            ventana.destroy()
+
+        ctk.CTkButton(
+            ventana, text='Invitar', command=confirmar,
+            fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
+            text_color='white', height=36, corner_radius=8, font=('Segoe UI', 13, 'bold')
+        ).pack(fill=tk.X, padx=16, pady=(10, 16))
+
     def _mostrar_selector_reaccion(self, event, id_mensaje):
         if not self.conectado:
             return
@@ -834,9 +1173,17 @@ class ChatFrame(ctk.CTkFrame):
         self.area_chat.tag_remove('busqueda', '1.0', tk.END)
 
     def _seleccionar_usuario(self, usuario):
-        if usuario != self.nickname:
-            self.combo_destinatario.set(usuario)
-            self.entry_mensaje.focus()
+        if usuario == self.nickname:
+            return
+        self.combo_destinatario.set('Todos')
+        self._cambiar_vista()
+        texto_actual = self.entry_mensaje.get()
+        if texto_actual and not texto_actual.endswith(' '):
+            texto_actual += ' '
+        self.entry_mensaje.delete(0, tk.END)
+        self.entry_mensaje.insert(0, f'{texto_actual}@{usuario} ')
+        self.entry_mensaje.focus()
+        self.entry_mensaje.icursor(tk.END)
 
     def _on_typing(self, event):
         if not self.conectado:
@@ -844,18 +1191,33 @@ class ChatFrame(ctk.CTkFrame):
         ahora = time.time()
         if ahora - self.ultimo_typing > 2:
             self.ultimo_typing = ahora
+            destinatario = self._destinatario_protocolo()
+            if destinatario.startswith('Grupo: '):
+                return  # el servidor no soporta "escribiendo..." para grupos todavía
             try:
-                destinatario = self.combo_destinatario.get()
                 enviar_typing(self.sock, destinatario)
             except Exception:
                 pass
 
+    def _evento_visible(self, evento, vista):
+        if evento['tipo'] == 'grupo':
+            return vista == f'Grupo: {evento["grupo"]}'
+        # Mensajes públicos, privados, de archivo, server e historial se ven
+        # siempre en el feed general -- "Para: <usuario>" solo elige a quién
+        # se manda el próximo mensaje, no filtra la vista (a diferencia de
+        # los grupos, que sí tienen su propia pestaña separada).
+        return not vista.startswith('Grupo: ')
+
     def _agregar_burbuja(self, emisor, contenido, hora, tipo='msg', alinear='izquierda', extra='',
-                          id_mensaje=None):
-        self.eventos_chat.append({
+                          id_mensaje=None, grupo=None):
+        evento = {
             'emisor': emisor, 'contenido': contenido, 'hora': hora,
-            'tipo': tipo, 'extra': extra, 'id_mensaje': id_mensaje
-        })
+            'tipo': tipo, 'extra': extra, 'id_mensaje': id_mensaje, 'grupo': grupo
+        }
+        self.eventos_chat.append(evento)
+
+        if not self._evento_visible(evento, self.combo_destinatario.get()):
+            return
 
         reacciones_texto = ''
         if id_mensaje is not None:
@@ -878,8 +1240,14 @@ class ChatFrame(ctk.CTkFrame):
             self.area_chat.insert(tk.END, f'{contenido}\n', 'historial_texto')
         else:
             es_propio = (emisor == self.nickname)
+            mencionado = (
+                tipo in ('msg', 'grupo') and not es_propio
+                and es_mencionado(self.nickname, contenido)
+            )
             inicio = self.area_chat.index(tk.END)
             self.area_chat.insert(tk.END, '\n')
+
+            prefijo_grupo = f'[{grupo}] ' if tipo == 'grupo' else ''
 
             if tipo == 'priv':
                 tag_nombre = 'nombre_privado'
@@ -895,7 +1263,17 @@ class ChatFrame(ctk.CTkFrame):
                 tag_nombre = 'nombre_propio'
                 tag_texto = 'propio_texto'
                 tag_hora = 'hora_propio'
-                prefijo = 'Tú'
+                prefijo = f'{prefijo_grupo}Tú'
+            elif mencionado:
+                tag_nombre = 'nombre_mencion'
+                tag_texto = 'mencion_texto'
+                tag_hora = 'hora_mencion'
+                prefijo = f'{prefijo_grupo}{emisor}'
+            elif tipo == 'grupo':
+                tag_nombre = 'nombre_grupo'
+                tag_texto = 'grupo_texto'
+                tag_hora = 'hora_grupo'
+                prefijo = f'{prefijo_grupo}{emisor}'
             else:
                 tag_nombre = 'nombre_otro'
                 tag_texto = 'otro_texto'
@@ -903,7 +1281,7 @@ class ChatFrame(ctk.CTkFrame):
                 prefijo = emisor
 
             self.area_chat.insert(tk.END, '┃ ', tag_texto)
-            if tipo == 'msg' and not es_propio:
+            if tipo in ('msg', 'grupo') and not es_propio:
                 avatar_img = self._obtener_avatar(emisor, 18)
                 self.area_chat._textbox.image_create(tk.END, image=avatar_img)
                 self.area_chat.insert(tk.END, ' ', tag_nombre)
@@ -964,9 +1342,11 @@ class ChatFrame(ctk.CTkFrame):
 
         if tipo == 'msg':
             emisor = mensaje.get('emisor')
-            self._agregar_burbuja(emisor, mensaje['contenido'], hora, 'msg', id_mensaje=mensaje.get('id'))
+            contenido = mensaje.get('contenido', '')
+            self._agregar_burbuja(emisor, contenido, hora, 'msg', id_mensaje=mensaje.get('id'))
             if emisor != self.nickname:
-                reproducir_beep()
+                mencionado = es_mencionado(self.nickname, contenido)
+                reproducir_beep(mencion=mencionado)
 
         elif tipo == 'priv':
             emisor = mensaje.get('emisor')
@@ -975,11 +1355,53 @@ class ChatFrame(ctk.CTkFrame):
                 reproducir_beep()
 
         elif tipo == 'server':
-            self._agregar_burbuja('', mensaje['contenido'], '', 'server')
+            contenido = mensaje['contenido']
+            if contenido.startswith('GRUPO_INVALIDO: '):
+                # La confirmación de "Crear grupo"/"Invitar" cierra el modal
+                # al instante (crear_grupo() es asíncrono, no hay forma de
+                # saber ahí mismo si el servidor lo va a rechazar). Sin este
+                # aviso, un error como nombre repetido o palabra reservada
+                # solo quedaba como una burbuja más, fácil de perderse una
+                # vez que el modal ya se cerró.
+                texto_error = contenido[len('GRUPO_INVALIDO: '):]
+                messagebox.showerror('Grupo', texto_error.capitalize())
+            self._agregar_burbuja('', contenido, '', 'server')
 
         elif tipo == 'usuarios':
             self.avatares_usuarios.update(mensaje.get('avatares', {}))
+            self.colores_usuarios.update(mensaje.get('colores', {}))
             self._actualizar_usuarios(mensaje.get('contenido', []))
+
+        elif tipo == 'grupo_actualizado':
+            nombre = mensaje.get('nombre')
+            es_nuevo = nombre not in self.grupos
+            self.grupos[nombre] = {
+                'miembros': mensaje.get('miembros', []),
+                'creador': mensaje.get('creador'),
+                'avatar': mensaje.get('avatar', 'gente')
+            }
+            self._actualizar_grupos()
+            if es_nuevo:
+                self._agregar_burbuja('', f'Te agregaron al grupo "{nombre}".', '', 'server')
+
+        elif tipo == 'grupo_eliminado':
+            nombre = mensaje.get('nombre')
+            self.grupos.pop(nombre, None)
+            self._actualizar_grupos()
+            if self.combo_destinatario.get() == f'Grupo: {nombre}':
+                self.combo_destinatario.set('Todos')
+                self._redibujar_chat()
+
+        elif tipo == 'grupo_msg':
+            emisor = mensaje.get('emisor')
+            nombre_grupo = mensaje.get('grupo')
+            contenido = mensaje.get('contenido', '')
+            self._agregar_burbuja(
+                emisor, contenido, hora, 'grupo', grupo=nombre_grupo, id_mensaje=mensaje.get('id')
+            )
+            if emisor != self.nickname:
+                mencionado = es_mencionado(self.nickname, contenido)
+                reproducir_beep(mencion=mencionado)
 
         elif tipo == 'historial':
             self._agregar_burbuja('', mensaje['contenido'], '', 'historial')
@@ -987,14 +1409,18 @@ class ChatFrame(ctk.CTkFrame):
         elif tipo == 'file':
             emisor = mensaje.get('emisor')
             nombre = mensaje.get('nombre_archivo')
-            if emisor != self.nickname:
-                ruta = guardar_archivo(emisor, nombre, mensaje.get('datos'))
-                extra = f'Guardado en: {ruta}'
-                if es_imagen(nombre):
-                    self._mostrar_preview_imagen(ruta, emisor)
-                reproducir_beep()
+            es_propio = emisor == self.nickname
+            ruta = guardar_archivo(emisor, nombre, mensaje.get('datos'))
+            if es_propio:
+                destinatario_mostrado = mensaje.get('destinatario', 'todos')
+                if destinatario_mostrado == 'todos':
+                    destinatario_mostrado = 'Todos'
+                extra = f'Enviado a {destinatario_mostrado}'
             else:
-                extra = f'Enviado a {mensaje.get("destinatario", "todos")}'
+                extra = f'Guardado en: {ruta}'
+                reproducir_beep()
+            if es_imagen(nombre):
+                self._mostrar_preview_imagen(ruta, emisor)
             self._agregar_burbuja(emisor, f'Archivo: {nombre}', hora, 'archivo', extra=extra, id_mensaje=mensaje.get('id'))
 
         elif tipo == 'reaccion':
@@ -1036,14 +1462,18 @@ class ChatFrame(ctk.CTkFrame):
 
         eventos = self.eventos_chat
         self.eventos_chat = []  # se vuelve a poblar solo al reinsertar cada burbuja
+        vista_activa = self.combo_destinatario.get()
+        hay_visibles = any(self._evento_visible(ev, vista_activa) for ev in eventos)
 
-        if not eventos:
+        if not eventos or not hay_visibles:
+            for ev in eventos:
+                self.eventos_chat.append(ev)
             self._mostrar_marca_agua()
         else:
             for ev in eventos:
                 self._agregar_burbuja(
                     ev['emisor'], ev['contenido'], ev['hora'], ev['tipo'],
-                    extra=ev['extra'], id_mensaje=ev['id_mensaje']
+                    extra=ev['extra'], id_mensaje=ev['id_mensaje'], grupo=ev.get('grupo')
                 )
             # Nota: los previews de imagen embebidos (_mostrar_preview_imagen)
             # no se re-insertan en un redibujado -- se pierde el thumbnail
@@ -1064,7 +1494,6 @@ class ChatFrame(ctk.CTkFrame):
         for fila in self.lista_usuarios.winfo_children():
             fila.destroy()
 
-        valores = ['Todos']
         for u in usuarios:
             texto = f'{u} (tú)' if u == self.nickname else u
             ctk.CTkButton(
@@ -1075,10 +1504,98 @@ class ChatFrame(ctk.CTkFrame):
                 corner_radius=8, height=32,
                 command=lambda u=u: self._seleccionar_usuario(u)
             ).pack(fill=tk.X, pady=2)
-            if u != self.nickname:
-                valores.append(u)
+        self._actualizar_titulo_vista()
+        self._recalcular_destinatarios()
+
+    def _recalcular_destinatarios(self):
+        valores = ['Todos']
+        valores += [u for u in self.usuarios_actuales if u != self.nickname]
+        valores += [f'Grupo: {nombre}' for nombre in self.grupos]
+        destinatario_actual = self.combo_destinatario.get()
         self.combo_destinatario.configure(values=valores)
-        self.label_titulo.configure(text=f'👾 Chat con Sockets - {len(usuarios)} en línea')
+        if destinatario_actual not in valores:
+            self.combo_destinatario.set('Todos')
+            if destinatario_actual != 'Todos':
+                self._redibujar_chat()
+
+    def _seleccionar_grupo(self, nombre_grupo):
+        self.combo_destinatario.set(f'Grupo: {nombre_grupo}')
+        self._cambiar_vista()
+
+    def _cambiar_vista(self, _valor_elegido=None):
+        self._redibujar_chat()
+        self._actualizar_titulo_vista()
+
+    def _destinatario_protocolo(self):
+        # El combo muestra 'Todos' (mayúscula, para que se lea bien), pero
+        # el servidor espera literalmente 'todos' en minúscula para typing/
+        # archivos (los mensajes de texto no tienen este problema porque
+        # usan enviar_mensaje_publico(), que ni siquiera manda destinatario).
+        # Sin esta traducción, "Todos" nunca calza con el chequeo del
+        # servidor y el envío queda silenciosamente sin destinatario válido.
+        valor = self.combo_destinatario.get()
+        return 'todos' if valor == 'Todos' else valor
+
+    def _ir_a_chat_general(self):
+        self.combo_destinatario.set('Todos')
+        self._cambiar_vista()
+
+    def _actualizar_titulo_vista(self):
+        vista = self.combo_destinatario.get()
+        if vista.startswith('Grupo: '):
+            nombre = vista[len('Grupo: '):]
+            n = len(self.grupos.get(nombre, {}).get('miembros', []))
+            self.label_titulo.configure(text=f'👥 {nombre} · {n} miembro{"s" if n != 1 else ""}')
+        else:
+            self.label_titulo.configure(text=f'👾 Chat con Sockets - {len(self.usuarios_actuales)} en línea')
+
+    def _salir_de_grupo(self, nombre_grupo):
+        salir_grupo(self.sock, nombre_grupo)
+
+    def _actualizar_grupos(self):
+        for fila in self.lista_grupos.winfo_children():
+            fila.destroy()
+
+        for nombre, info in self.grupos.items():
+            fila = ctk.CTkFrame(self.lista_grupos, fg_color='transparent')
+            fila.pack(fill=tk.X, pady=2)
+            # Los botones ✕/＋ se empaquetan PRIMERO (side=RIGHT) para que
+            # reserven su espacio antes que el de nombre -- si se empaqueta
+            # el de nombre primero con fill=X+expand, un nombre de grupo
+            # largo lo hace crecer sin límite y empuja a ✕/＋ fuera del
+            # ancho visible de la barra lateral (quedan sin verse ni poder
+            # clickearse).
+            ctk.CTkButton(
+                fila, text='✕', width=26, height=26,
+                fg_color='transparent', hover_color=self.tema['borde'],
+                text_color=self.tema['archivo'], font=('Segoe UI', 13, 'bold'),
+                corner_radius=6, command=lambda n=nombre: self._salir_de_grupo(n)
+            ).pack(side=tk.RIGHT, padx=(4, 0))
+            ctk.CTkButton(
+                fila, text='＋', width=26, height=26,
+                fg_color='transparent', hover_color=self.tema['borde'],
+                text_color=self.tema['texto_secundario'], font=('Segoe UI', 13, 'bold'),
+                corner_radius=6, command=lambda n=nombre: self._mostrar_invitar_grupo(n)
+            ).pack(side=tk.RIGHT, padx=(4, 0))
+            # El ícono va en un CTkLabel aparte, con su propio espacio fijo,
+            # en vez de "image=" dentro del botón de nombre: si el botón
+            # queda con poco ancho disponible (fila angosta, texto largo),
+            # CTkButton prioriza el texto y el ícono deja de dibujarse. Con
+            # un widget dedicado, el ícono siempre tiene su lugar reservado.
+            ctk.CTkLabel(
+                fila, text='', image=self._obtener_avatar_grupo(nombre, 22),
+                fg_color='transparent', width=24
+            ).pack(side=tk.LEFT, padx=(2, 0))
+            nombre_mostrado = nombre if len(nombre) <= 14 else nombre[:13] + '…'
+            ctk.CTkButton(
+                fila, text=f' {nombre_mostrado} · {len(info["miembros"])} miembros', anchor='w',
+                fg_color='transparent', hover_color=self.tema['borde'],
+                text_color=self.tema['grupo'], font=('Segoe UI', 14),
+                corner_radius=8, height=32,
+                command=lambda n=nombre: self._seleccionar_grupo(n)
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._recalcular_destinatarios()
+        self._actualizar_titulo_vista()
 
     def _enviar_mensaje(self):
         texto = self.entry_mensaje.get().strip()
@@ -1088,6 +1605,8 @@ class ChatFrame(ctk.CTkFrame):
         destinatario = self.combo_destinatario.get()
         if destinatario == 'Todos':
             enviar_mensaje_publico(self.sock, texto)
+        elif destinatario.startswith('Grupo: '):
+            enviar_mensaje_grupo(self.sock, destinatario[len('Grupo: '):], texto)
         else:
             enviar_mensaje_privado(self.sock, destinatario, texto)
 
@@ -1096,6 +1615,13 @@ class ChatFrame(ctk.CTkFrame):
     def _enviar_archivo(self):
         if not self.conectado:
             return
+        destinatario_vista = self.combo_destinatario.get()
+        if destinatario_vista.startswith('Grupo: '):
+            messagebox.showinfo(
+                'Enviar archivo',
+                'Por ahora no se pueden enviar archivos a un grupo. Elegí "Todos" o un usuario.'
+            )
+            return
         ruta = filedialog.askopenfilename(title='Seleccionar archivo')
         if not ruta:
             return
@@ -1103,16 +1629,14 @@ class ChatFrame(ctk.CTkFrame):
             messagebox.showerror('Error', 'El archivo no existe.')
             return
 
-        destinatario = self.combo_destinatario.get()
+        destinatario = self._destinatario_protocolo()
         try:
+            # No se agrega una burbuja local acá -- el servidor ahora
+            # siempre hace eco del archivo de vuelta al emisor (mismo
+            # patrón que los mensajes privados de texto), así que la
+            # burbuja llega sola por _manejar_mensaje con el id real
+            # (necesario para que las reacciones calcen) y sin duplicar.
             enviar_archivo(self.sock, ruta, destinatario)
-            nombre = os.path.basename(ruta)
-            self._agregar_burbuja(
-                self.nickname, f'Archivo: {nombre}', time.strftime('%H:%M:%S'),
-                'archivo', extra=f'Enviado a {destinatario}'
-            )
-            if es_imagen(nombre):
-                self._mostrar_preview_imagen(ruta, self.nickname)
         except Exception as e:
             messagebox.showerror('Error', f'No se pudo enviar el archivo: {e}')
 
@@ -1182,14 +1706,14 @@ class ChatGUI:
             self.chat_frame._historial_mostrado = False
             self.chat_frame._mostrar_marca_agua()
 
-    def _conectar(self, ip, puerto, nickname, avatar='circulo'):
+    def _conectar(self, ip, puerto, nickname, avatar='circulo', color=None):
         try:
             self.sock = conectar(ip, puerto)
         except Exception as e:
             self.login_frame.mostrar_error(f'No se pudo conectar: {e}')
             return
 
-        enviar_nickname(self.sock, nickname, avatar)
+        enviar_nickname(self.sock, nickname, avatar, color)
         respuesta = recibir(self.sock)
 
         if respuesta and respuesta.get('contenido') == 'NICK_INVALIDO':
@@ -1210,6 +1734,8 @@ class ChatGUI:
         self.chat_frame.nickname = nickname
         self.chat_frame.conectado = True
         self.chat_frame.avatares_usuarios[nickname] = avatar
+        if color:
+            self.chat_frame.colores_usuarios[nickname] = color
         self.chat_frame.pack(fill=tk.BOTH, expand=True)
 
         self.chat_frame._manejar_mensaje({

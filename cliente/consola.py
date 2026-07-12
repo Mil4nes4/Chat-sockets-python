@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sys
 import threading
@@ -9,7 +10,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cliente.cliente_chat import (
     conectar, enviar, recibir, enviar_nickname, enviar_mensaje_publico,
     enviar_mensaje_privado, solicitar_lista, enviar_archivo,
-    enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES
+    enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES,
+    crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
+    es_mencionado
 )
 
 
@@ -52,6 +55,7 @@ class Color:
     BLANCO = '\033[97m'
     FONDO_AZUL = '\033[44m'
     FONDO_GRIS = '\033[100m'
+    FONDO_AMARILLO = '\033[43m'
 
 
 def color(texto, codigo):
@@ -88,13 +92,17 @@ def _margen_centrado():
     return ' ' * max((ancho_terminal - ANCHO_BANNER) // 2, 0)
 
 
-def reproducir_beep():
+def reproducir_beep(mencion=False):
     """Reproduce un sonido de notificación."""
     try:
         if sys.platform == 'win32':
             import winsound
-            winsound.PlaySound(r'C:\Windows\Media\Windows Pop-up Blocked.wav',
-                                winsound.SND_FILENAME | winsound.SND_ASYNC)
+            if mencion:
+                winsound.PlaySound(r'C:\Windows\Media\Windows Notify Messaging.wav',
+                                    winsound.SND_FILENAME | winsound.SND_ASYNC)
+            else:
+                winsound.PlaySound(r'C:\Windows\Media\Windows Pop-up Blocked.wav',
+                                    winsound.SND_FILENAME | winsound.SND_ASYNC)
     except Exception:
         pass
 
@@ -154,6 +162,11 @@ def imprimir_ayuda():
         print(f'{margen}  {color("/reconectar", Color.AMARILLO)}                  Intentar reconectar        ({color("/r", Color.AMARILLO)})')
         print(f'{margen}  {color("/salir", Color.AMARILLO)}                       Desconectarse              ({color("/s", Color.AMARILLO)})')
         print(f'{margen}  {color("/ayuda", Color.AMARILLO)}                       Mostrar esta ayuda         ({color("/h", Color.AMARILLO)})')
+        print(f'{margen}  {color("/grupo crear", Color.AMARILLO)} <nombre> <u1,u2,..>  Crear un grupo')
+        print(f'{margen}  {color("/grupo invitar", Color.AMARILLO)} <nombre> <u1,u2,..> Invitar a un grupo')
+        print(f'{margen}  {color("/grupo salir", Color.AMARILLO)} <nombre>            Salir de un grupo')
+        print(f'{margen}  {color("/grupo", Color.AMARILLO)} <nombre> <mensaje>       Mandar mensaje al grupo')
+        print(f'{margen}  {color("/grupos", Color.AMARILLO)}                       Ver tus grupos')
         imprimir_separador()
         print(
             f'{margen}  {color("●", Color.AMARILLO)} comando  '
@@ -192,6 +205,7 @@ class ClienteConsola:
         self.ultimo_typing = 0
         self.ip = '127.0.0.1'
         self.puerto = 5000
+        self.grupos = {}  # nombre -> {'miembros': [...], 'creador': .., 'avatar': ..}
 
     def conectar(self, ip, puerto, nickname):
         self.ip = ip
@@ -229,6 +243,10 @@ class ClienteConsola:
         if self.sock:
             cerrar(self.sock)
             self.sock = None
+        # El servidor te saca de todos tus grupos al desconectarte (limpieza
+        # automática) -- si no se limpia acá también, /reconectar deja
+        # self.grupos con membresías viejas que ya no son reales.
+        self.grupos = {}
         with LOCK_IMPRESION:
             margen = _margen_centrado()
             print()
@@ -272,9 +290,14 @@ class ClienteConsola:
             if emisor == self.nickname:
                 linea = color(f' {color("[Tú]", Color.BOLD + Color.BLANCO)} {hora}: {contenido} ', Color.FONDO_AZUL)
             else:
-                nombre = color(emisor, Color.BOLD + color_usuario(emisor))
-                linea = f'{nombre} {color(hora, Color.GRIS)}: {contenido}'
-                reproducir_beep()
+                mencionado = es_mencionado(self.nickname, contenido)
+                if mencionado:
+                    nombre = color(emisor, Color.BOLD + Color.BLANCO)
+                    linea = color(f' {nombre} {color(hora, Color.GRIS)}: {contenido} ', Color.FONDO_AMARILLO)
+                else:
+                    nombre = color(emisor, Color.BOLD + color_usuario(emisor))
+                    linea = f'{nombre} {color(hora, Color.GRIS)}: {contenido}'
+                reproducir_beep(mencion=mencionado)
 
         elif tipo == 'priv':
             emisor = mensaje.get('emisor')
@@ -293,6 +316,44 @@ class ClienteConsola:
             usuarios = mensaje.get('contenido', [])
             lista = ', '.join(usuarios) or '(ninguno)'
             linea = f'👥 {color("[USUARIOS]", Color.CIAN)} {lista}'
+
+        elif tipo == 'grupo_actualizado':
+            nombre = mensaje.get('nombre')
+            es_nuevo = nombre not in self.grupos
+            self.grupos[nombre] = {
+                'miembros': mensaje.get('miembros', []),
+                'creador': mensaje.get('creador'),
+                'avatar': mensaje.get('avatar', 'gente')
+            }
+            if es_nuevo:
+                linea = f'👥 {color(f"[GRUPO] Te agregaron al grupo \"{nombre}\"", Color.VERDE)}'
+            else:
+                miembros = ', '.join(self.grupos[nombre]['miembros'])
+                linea = f'👥 {color(f"[GRUPO] {nombre} ahora tiene:", Color.VERDE)} {miembros}'
+
+        elif tipo == 'grupo_eliminado':
+            nombre = mensaje.get('nombre')
+            self.grupos.pop(nombre, None)
+            linea = f'👥 {color(f"[GRUPO] Saliste de \"{nombre}\"", Color.VERDE)}'
+
+        elif tipo == 'grupo_msg':
+            emisor = mensaje.get('emisor')
+            grupo = mensaje.get('grupo')
+            contenido = mensaje.get('contenido')
+            if emisor == self.nickname:
+                linea = f'👥 {color(f"[{grupo}] Tú", Color.VERDE)} {color(hora, Color.GRIS)}: {contenido}'
+            else:
+                mencionado = es_mencionado(self.nickname, contenido)
+                if mencionado:
+                    nombre = color(emisor, Color.BOLD + Color.BLANCO)
+                    linea = color(
+                        f' {color(f"[{grupo}]", Color.BOLD)} {nombre} {color(hora, Color.GRIS)}: {contenido} ',
+                        Color.FONDO_AMARILLO
+                    )
+                else:
+                    nombre = color(emisor, Color.BOLD + Color.VERDE)
+                    linea = f'👥 {color(f"[{grupo}]", Color.VERDE)} {nombre} {color(hora, Color.GRIS)}: {contenido}'
+                reproducir_beep(mencion=mencionado)
 
         elif tipo == 'historial':
             if not self.historial_mostrado:
@@ -372,14 +433,21 @@ class ClienteConsola:
                 return
             ruta = partes[1]
             destinatario = partes[2] if len(partes) == 3 else 'todos'
+            if destinatario in self.grupos:
+                # El servidor no sabe rutear archivos a un grupo (manejar_archivo
+                # solo distingue 'todos' vs un nickname puntual) -- sin este
+                # chequeo el archivo se manda a un socket inexistente y se
+                # pierde en silencio, sin ningún error visible.
+                print(color('No se pueden enviar archivos a un grupo por ahora.', Color.ROJO))
+                return
             if not os.path.exists(ruta):
                 print(color('El archivo no existe.', Color.ROJO))
                 return
             try:
+                # No se imprime confirmación acá -- el servidor hace eco del
+                # archivo de vuelta (mismo patrón que /privado), y
+                # _manejar_mensaje ya lo muestra solo con el mismo formato.
                 enviar_archivo(self.sock, ruta, destinatario)
-                nombre = os.path.basename(ruta)
-                tipo_archivo = 'IMAGEN' if es_imagen(nombre) else 'ARCHIVO'
-                print(color(f'{tipo_archivo} enviado a {destinatario}: {nombre}', Color.MAGENTA))
             except Exception as e:
                 print(color(f'Error al enviar archivo: {e}', Color.ROJO))
 
@@ -420,6 +488,42 @@ class ClienteConsola:
         elif entrada in ('/ayuda', '/h'):
             imprimir_ayuda()
 
+        elif entrada == '/grupos':
+            if self.grupos:
+                lista = ', '.join(f'{n} ({len(i["miembros"])})' for n, i in self.grupos.items())
+            else:
+                lista = '(ninguno)'
+            print(color(f'Tus grupos: {lista}', Color.VERDE))
+
+        elif entrada.startswith('/grupo '):
+            resto = entrada[len('/grupo '):]
+            if resto.startswith('crear '):
+                partes = resto[len('crear '):].split(' ', 1)
+                if len(partes) < 2:
+                    print(color('Uso: /grupo crear <nombre> <usuario1,usuario2,...>', Color.ROJO))
+                    return
+                miembros = [m.strip() for m in partes[1].split(',') if m.strip()]
+                crear_grupo(self.sock, partes[0], miembros)
+            elif resto.startswith('invitar '):
+                partes = resto[len('invitar '):].split(' ', 1)
+                if len(partes) < 2:
+                    print(color('Uso: /grupo invitar <nombre> <usuario1,usuario2,...>', Color.ROJO))
+                    return
+                miembros = [m.strip() for m in partes[1].split(',') if m.strip()]
+                invitar_a_grupo(self.sock, partes[0], miembros)
+            elif resto.startswith('salir '):
+                nombre = resto[len('salir '):].strip()
+                if not nombre:
+                    print(color('Uso: /grupo salir <nombre>', Color.ROJO))
+                    return
+                salir_grupo(self.sock, nombre)
+            else:
+                partes = resto.split(' ', 1)
+                if len(partes) < 2:
+                    print(color('Uso: /grupo <nombre> <mensaje>', Color.ROJO))
+                    return
+                enviar_mensaje_grupo(self.sock, partes[0], partes[1])
+
         else:
             enviar_mensaje_publico(self.sock, entrada)
 
@@ -445,12 +549,14 @@ class ClienteConsola:
         coincidencias = [linea for linea in self.historial if texto.lower() in linea.lower()]
         with LOCK_IMPRESION:
             print(color(f'\n[BUSCAR] {len(coincidencias)} coincidencias para "{texto}":', Color.CIAN))
+            # Antes se resaltaba con .replace(texto, ...) + .replace(texto.capitalize(), ...),
+            # que solo cubre minúsculas y "Capitalizado" -- un resultado con
+            # otra combinación de mayúsculas (ej. TODO en mayúsculas) se
+            # encontraba (la búsqueda ya era case-insensitive) pero no se
+            # resaltaba. Con regex + IGNORECASE se resalta tal cual aparece.
+            patron = re.compile(re.escape(texto), re.IGNORECASE)
             for linea in coincidencias:
-                resaltada = linea.replace(
-                    texto, color(texto, Color.AMARILLO)
-                ).replace(
-                    texto.capitalize(), color(texto.capitalize(), Color.AMARILLO)
-                )
+                resaltada = patron.sub(lambda m: color(m.group(0), Color.AMARILLO), linea)
                 print(f'  {resaltada}')
             if not coincidencias:
                 print(color('  No se encontraron coincidencias.', Color.GRIS))

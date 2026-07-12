@@ -2,6 +2,7 @@ import socket
 import json
 import base64
 import os
+import re
 
 CARPETA_DESCARGAS = 'descargas'
 
@@ -11,6 +12,15 @@ EMOJIS_COMUNES = [
     '👎', '👏', '🙏', '💪', '✌️', '👀', '❤️', '💔', '🔥', '⭐',
     '🎉', '✅', '❌', '⚠️', '💬', '☕', '🍕', '🎮', '💻', '📎',
 ]
+
+
+def es_mencionado(nickname, contenido):
+    # Antes se usaba "f'@{nickname}' in contenido", que da falso positivo
+    # cuando un nick es prefijo de otro (ej. "Ana" matchea "@Anabel"). Se
+    # exige que el nick termine en un límite de palabra real.
+    if not nickname or not contenido:
+        return False
+    return re.search(r'@' + re.escape(nickname) + r'\b', contenido) is not None
 
 
 def conectar(ip, puerto):
@@ -43,8 +53,8 @@ def recibir(socket_cliente):
     return json.loads(data.decode('utf-8'))
 
 
-def enviar_nickname(socket_cliente, nickname, avatar='circulo'):
-    enviar(socket_cliente, {'tipo': 'nick', 'contenido': nickname, 'avatar': avatar})
+def enviar_nickname(socket_cliente, nickname, avatar='circulo', color=None):
+    enviar(socket_cliente, {'tipo': 'nick', 'contenido': nickname, 'avatar': avatar, 'color': color})
 
 
 def enviar_mensaje_publico(socket_cliente, mensaje):
@@ -69,6 +79,22 @@ def enviar_typing(socket_cliente, destinatario='todos'):
 
 def enviar_reaccion(socket_cliente, id_mensaje, emoji):
     enviar(socket_cliente, {'tipo': 'reaccion', 'id_mensaje': id_mensaje, 'emoji': emoji})
+
+
+def crear_grupo(socket_cliente, nombre, miembros, avatar='gente'):
+    enviar(socket_cliente, {'tipo': 'grupo_crear', 'nombre': nombre, 'miembros': miembros, 'avatar': avatar})
+
+
+def invitar_a_grupo(socket_cliente, grupo, miembros):
+    enviar(socket_cliente, {'tipo': 'grupo_invitar', 'grupo': grupo, 'miembros': miembros})
+
+
+def enviar_mensaje_grupo(socket_cliente, grupo, mensaje):
+    enviar(socket_cliente, {'tipo': 'grupo_msg', 'grupo': grupo, 'contenido': mensaje})
+
+
+def salir_grupo(socket_cliente, grupo):
+    enviar(socket_cliente, {'tipo': 'grupo_salir', 'grupo': grupo})
 
 
 def enviar_archivo(socket_cliente, ruta, destinatario='todos'):

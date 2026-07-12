@@ -18,7 +18,17 @@ CARPETA_ARCHIVOS = os.path.join(BASE_DIR, 'archivos_recibidos')
 clientes = {}
 # Diccionario global de avatares elegidos: nickname -> patron_key
 avatares = {}
+# Diccionario global de colores de perfil elegidos: nickname -> hex
+colores = {}
+# Diccionario global de grupos: nombre -> {'miembros': set(nicknames), 'creador': nickname, 'avatar': patron_key}
+grupos = {}
 lock = threading.Lock()
+# Protege el envío por socket: sin esto, dos hilos pueden mandarle datos al
+# mismo cliente al mismo tiempo (ej. dos "fulano se unió" casi simultáneos) y
+# sus bytes se intercalan, rompiendo el framing de longitud del protocolo --
+# el cliente afectado queda "sordo" (deja de recibir todo) sin ningún error
+# visible. Reproducido con varias conexiones simultáneas antes de este fix.
+lock_envio = threading.Lock()
 siguiente_id_mensaje = 0
 
 
@@ -45,8 +55,9 @@ def enviar(socket_cliente, mensaje):
     try:
         data = json.dumps(mensaje).encode('utf-8')
         longitud = len(data)
-        socket_cliente.sendall(longitud.to_bytes(4, byteorder='big'))
-        socket_cliente.sendall(data)
+        with lock_envio:
+            socket_cliente.sendall(longitud.to_bytes(4, byteorder='big'))
+            socket_cliente.sendall(data)
     except Exception:
         pass
 
@@ -88,7 +99,42 @@ def enviar_lista_usuarios():
     with lock:
         usuarios = list(clientes.keys())
         copia_avatares = dict(avatares)
-    broadcast({'tipo': 'usuarios', 'contenido': usuarios, 'avatares': copia_avatares})
+        copia_colores = dict(colores)
+    broadcast({'tipo': 'usuarios', 'contenido': usuarios, 'avatares': copia_avatares, 'colores': copia_colores})
+
+
+def enviar_grupo(nombre_grupo, mensaje):
+    with lock:
+        miembros = list(grupos.get(nombre_grupo, {}).get('miembros', []))
+        socks = [clientes[m] for m in miembros if m in clientes]
+    for sock in socks:
+        enviar(sock, mensaje)
+
+
+def sincronizar_grupo(nombre_grupo):
+    with lock:
+        info = grupos.get(nombre_grupo)
+        if not info:
+            return
+        miembros = list(info['miembros'])
+        mensaje = {
+            'tipo': 'grupo_actualizado', 'nombre': nombre_grupo,
+            'miembros': miembros, 'creador': info['creador'], 'avatar': info['avatar']
+        }
+    enviar_grupo(nombre_grupo, mensaje)
+
+
+def _salir_de_grupo(nickname, nombre_grupo):
+    with lock:
+        info = grupos.get(nombre_grupo)
+        if not info or nickname not in info['miembros']:
+            return
+        info['miembros'].discard(nickname)
+        vacio = not info['miembros']
+        if vacio:
+            del grupos[nombre_grupo]
+    if not vacio:
+        sincronizar_grupo(nombre_grupo)
 
 
 def guardar_historial(linea):
@@ -133,13 +179,18 @@ def manejar_archivo(emisor, destinatario, nombre_archivo, datos_base64):
     }
 
     if destinatario == 'todos':
-        broadcast(mensaje, excluir=emisor)
+        # Sin excluir al emisor: mismo patrón que los mensajes públicos, así
+        # el emisor ve su propio archivo con el mismo id que todos (antes
+        # quedaba afuera del broadcast y el cliente tenía que compensar con
+        # un eco local propio, que además duplicaba con el eco de abajo).
+        broadcast(mensaje)
     else:
         enviar_privado(destinatario, mensaje)
-        with lock:
-            sock = clientes.get(emisor)
-        if sock:
-            enviar(sock, mensaje)
+        if destinatario != emisor:
+            with lock:
+                sock = clientes.get(emisor)
+            if sock:
+                enviar(sock, mensaje)
 
 
 def obtener_hora():
@@ -174,6 +225,7 @@ def manejar_cliente(socket_cliente, direccion):
 
         nickname = mensaje.get('contenido', '').strip()
         avatar = mensaje.get('avatar', 'circulo')
+        color = mensaje.get('color')
 
         with lock:
             if not nickname or nickname in clientes:
@@ -184,6 +236,8 @@ def manejar_cliente(socket_cliente, direccion):
                 return
             clientes[nickname] = socket_cliente
             avatares[nickname] = avatar
+            if color:
+                colores[nickname] = color
 
         print(f'[Conectado] {nickname} desde {direccion}')
 
@@ -238,7 +292,11 @@ def manejar_cliente(socket_cliente, direccion):
                 with lock:
                     usuarios = list(clientes.keys())
                     copia_avatares = dict(avatares)
-                enviar(socket_cliente, {'tipo': 'usuarios', 'contenido': usuarios, 'avatares': copia_avatares})
+                    copia_colores = dict(colores)
+                enviar(socket_cliente, {
+                    'tipo': 'usuarios', 'contenido': usuarios,
+                    'avatares': copia_avatares, 'colores': copia_colores
+                })
 
             elif tipo == 'file':
                 destinatario = mensaje.get('destinatario', 'todos')
@@ -269,6 +327,77 @@ def manejar_cliente(socket_cliente, direccion):
                         'emoji': emoji
                     })
 
+            elif tipo == 'grupo_crear':
+                nombre_grupo = (mensaje.get('nombre') or '').strip()
+                miembros_pedidos = mensaje.get('miembros', [])
+                avatar_grupo = mensaje.get('avatar', 'gente')
+
+                with lock:
+                    miembros_validos = {m for m in miembros_pedidos if m in clientes and m != nickname}
+                    if not nombre_grupo:
+                        error = 'el nombre no puede estar vacío'
+                    elif nombre_grupo in ('crear', 'invitar', 'salir'):
+                        # Esas palabras son subcomandos de "/grupo <subcomando>
+                        # ..." en el cliente de consola -- un grupo con ese
+                        # nombre nunca podría recibir mensajes desde ahí.
+                        error = f'"{nombre_grupo}" es una palabra reservada, elegí otro nombre'
+                    elif nombre_grupo in grupos or nombre_grupo in clientes:
+                        error = 'ya existe un grupo o usuario con ese nombre'
+                    elif not miembros_validos:
+                        error = 'elegí al menos un miembro conectado'
+                    else:
+                        error = None
+                        grupos[nombre_grupo] = {
+                            'miembros': {nickname, *miembros_validos},
+                            'creador': nickname,
+                            'avatar': avatar_grupo
+                        }
+
+                if error:
+                    enviar(socket_cliente, {'tipo': 'server', 'contenido': f'GRUPO_INVALIDO: {error}'})
+                else:
+                    sincronizar_grupo(nombre_grupo)
+
+            elif tipo == 'grupo_invitar':
+                nombre_grupo = mensaje.get('grupo')
+                miembros_pedidos = mensaje.get('miembros', [])
+
+                with lock:
+                    info = grupos.get(nombre_grupo)
+                    if not info or nickname not in info['miembros']:
+                        error = 'no sos miembro de ese grupo'
+                    else:
+                        error = None
+                        nuevos = {m for m in miembros_pedidos if m in clientes and m not in info['miembros']}
+                        info['miembros'].update(nuevos)
+
+                if error:
+                    enviar(socket_cliente, {'tipo': 'server', 'contenido': f'GRUPO_INVALIDO: {error}'})
+                else:
+                    sincronizar_grupo(nombre_grupo)
+
+            elif tipo == 'grupo_msg':
+                nombre_grupo = mensaje.get('grupo')
+                contenido = mensaje.get('contenido', '')
+
+                with lock:
+                    es_miembro = nickname in grupos.get(nombre_grupo, {}).get('miembros', set())
+
+                if es_miembro:
+                    enviar_grupo(nombre_grupo, {
+                        'tipo': 'grupo_msg',
+                        'id': nuevo_id_mensaje(),
+                        'grupo': nombre_grupo,
+                        'emisor': nickname,
+                        'contenido': contenido,
+                        'hora': obtener_hora()
+                    })
+
+            elif tipo == 'grupo_salir':
+                nombre_grupo = mensaje.get('grupo')
+                _salir_de_grupo(nickname, nombre_grupo)
+                enviar(socket_cliente, {'tipo': 'grupo_eliminado', 'nombre': nombre_grupo})
+
             elif tipo == 'exit':
                 break
 
@@ -280,6 +409,10 @@ def manejar_cliente(socket_cliente, direccion):
                 if nickname in clientes:
                     del clientes[nickname]
                 avatares.pop(nickname, None)
+                colores.pop(nickname, None)
+                grupos_del_usuario = [n for n, info in grupos.items() if nickname in info['miembros']]
+            for nombre_grupo in grupos_del_usuario:
+                _salir_de_grupo(nickname, nombre_grupo)
             print(f'[Desconectado] {nickname}')
             broadcast({
                 'tipo': 'server',
