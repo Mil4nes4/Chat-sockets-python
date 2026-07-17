@@ -12,7 +12,9 @@ from cliente.cliente_chat import (
     enviar_mensaje_privado, solicitar_lista, enviar_archivo,
     enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES,
     crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
-    es_mencionado
+    es_mencionado, interpretar_contenido, confirmar_entrega,
+    confirmar_lectura, solicitar_salas, crear_sala, unirse_sala,
+    salir_sala
 )
 
 
@@ -167,6 +169,10 @@ def imprimir_ayuda():
         print(f'{margen}  {color("/grupo salir", Color.AMARILLO)} <nombre>            Salir de un grupo')
         print(f'{margen}  {color("/grupo", Color.AMARILLO)} <nombre> <mensaje>       Mandar mensaje al grupo')
         print(f'{margen}  {color("/grupos", Color.AMARILLO)}                       Ver tus grupos')
+        print(f'{margen}  {color("/salas", Color.AMARILLO)}                        Ver salas disponibles')
+        print(f'{margen}  {color("/crear", Color.AMARILLO)} <nombre>               Crear una sala y entrar')
+        print(f'{margen}  {color("/unirse", Color.AMARILLO)} <nombre>              Cambiar de sala')
+        print(f'{margen}  {color("/salirSala", Color.AMARILLO)}                    Volver a General')
         imprimir_separador()
         print(
             f'{margen}  {color("●", Color.AMARILLO)} comando  '
@@ -206,6 +212,10 @@ class ClienteConsola:
         self.ip = '127.0.0.1'
         self.puerto = 5000
         self.grupos = {}  # nombre -> {'miembros': [...], 'creador': .., 'avatar': ..}
+        self.sala_actual = 'General'
+        self.salas = {}
+        self.estados_mensajes = {}
+        self.ids_mensajes_vistos = set()
 
     def conectar(self, ip, puerto, nickname):
         self.ip = ip
@@ -221,11 +231,21 @@ class ClienteConsola:
         enviar_nickname(self.sock, nickname)
         respuesta = recibir(self.sock)
 
-        if respuesta and respuesta.get('contenido') == 'NICK_INVALIDO':
-            print(color('El nickname ya está en uso o es inválido.', Color.ROJO))
-            self.sock.close()
-            self.sock = None
-            return False
+        if respuesta:
+            codigo = respuesta.get('contenido')
+            errores = {
+                'NICK_INVALIDO': 'El nickname ya está en uso o es inválido.',
+                'CLAVE_REQUERIDA': 'El cliente debe usar una clave de cifrado.',
+                'CLAVE_INCOMPATIBLE': (
+                    'La clave de cifrado no coincide con la de los demás clientes. '
+                    'Copia el mismo archivo cliente/clave_chat.key.'
+                ),
+            }
+            if codigo in errores:
+                print(color(errores[codigo], Color.ROJO))
+                self.sock.close()
+                self.sock = None
+                return False
 
         self.conectado = True
         print(color(f'✓ Conectado como {nickname} a {ip}:{puerto}', Color.VERDE))
@@ -247,6 +267,10 @@ class ClienteConsola:
         # automática) -- si no se limpia acá también, /reconectar deja
         # self.grupos con membresías viejas que ya no son reales.
         self.grupos = {}
+        self.sala_actual = 'General'
+        self.salas = {}
+        self.estados_mensajes = {}
+        self.ids_mensajes_vistos = set()
         with LOCK_IMPRESION:
             margen = _margen_centrado()
             print()
@@ -282,40 +306,125 @@ class ClienteConsola:
     def _manejar_mensaje(self, mensaje):
         tipo = mensaje.get('tipo')
         hora = mensaje.get('hora', '')
+        id_mensaje = mensaje.get('id')
         linea = ''
+        confirmar = False
+
+        if tipo in ('msg', 'priv', 'grupo_msg', 'historial_msg', 'file'):
+            if id_mensaje and id_mensaje in self.ids_mensajes_vistos:
+                return
+            if id_mensaje:
+                self.ids_mensajes_vistos.add(id_mensaje)
+
+        def contenido_legible():
+            try:
+                return interpretar_contenido(mensaje)
+            except ValueError as exc:
+                return f'[No se pudo descifrar: {exc}]'
+
+        def marca_estado():
+            estado = self.estados_mensajes.get(id_mensaje, 'pending')
+            return {
+                'pending': ' …',
+                'ack': ' ✓',
+                'delivered': ' ✓✓',
+                'read': ' ✓✓ leído',
+                'error': ' ✗',
+            }.get(estado, '')
 
         if tipo == 'msg':
             emisor = mensaje.get('emisor')
-            contenido = mensaje.get('contenido')
+            contenido = contenido_legible()
+            sala = mensaje.get('sala', self.sala_actual)
             if emisor == self.nickname:
-                linea = color(f' {color("[Tú]", Color.BOLD + Color.BLANCO)} {hora}: {contenido} ', Color.FONDO_AZUL)
+                linea = color(
+                    f' {color("[Tú]", Color.BOLD + Color.BLANCO)} '
+                    f'{hora} [{sala}]: {contenido}{marca_estado()} ',
+                    Color.FONDO_AZUL
+                )
             else:
                 mencionado = es_mencionado(self.nickname, contenido)
                 if mencionado:
                     nombre = color(emisor, Color.BOLD + Color.BLANCO)
-                    linea = color(f' {nombre} {color(hora, Color.GRIS)}: {contenido} ', Color.FONDO_AMARILLO)
+                    linea = color(
+                        f' {nombre} {color(hora, Color.GRIS)} '
+                        f'[{sala}]: {contenido} ',
+                        Color.FONDO_AMARILLO
+                    )
                 else:
-                    nombre = color(emisor, Color.BOLD + color_usuario(emisor))
-                    linea = f'{nombre} {color(hora, Color.GRIS)}: {contenido}'
+                    nombre = color(
+                        emisor, Color.BOLD + color_usuario(emisor)
+                    )
+                    linea = (
+                        f'{nombre} {color(hora, Color.GRIS)} '
+                        f'[{sala}]: {contenido}'
+                    )
                 reproducir_beep(mencion=mencionado)
+                confirmar = True
 
         elif tipo == 'priv':
             emisor = mensaje.get('emisor')
-            contenido = mensaje.get('contenido')
+            contenido = contenido_legible()
             if emisor == self.nickname:
                 destinatario = mensaje.get('destinatario')
-                linea = f'🔒 {color("[PRIVADO para", Color.AMARILLO)} {color(destinatario, Color.BOLD)}{color("]", Color.AMARILLO)} {color(hora, Color.GRIS)}: {color(contenido, Color.AMARILLO)}'
+                linea = (
+                    f'🔒 {color("[PRIVADO para", Color.AMARILLO)} '
+                    f'{color(destinatario, Color.BOLD)}'
+                    f'{color("]", Color.AMARILLO)} '
+                    f'{color(hora, Color.GRIS)}: '
+                    f'{color(contenido, Color.AMARILLO)}'
+                    f'{marca_estado()}'
+                )
             else:
-                linea = f'🔒 {color("[PRIVADO", Color.AMARILLO)} {color("de", Color.AMARILLO)} {color(emisor, Color.BOLD)}{color("]", Color.AMARILLO)} {color(hora, Color.GRIS)}: {color(contenido, Color.AMARILLO)}'
+                linea = (
+                    f'🔒 {color("[PRIVADO", Color.AMARILLO)} '
+                    f'{color("de", Color.AMARILLO)} '
+                    f'{color(emisor, Color.BOLD)}'
+                    f'{color("]", Color.AMARILLO)} '
+                    f'{color(hora, Color.GRIS)}: '
+                    f'{color(contenido, Color.AMARILLO)}'
+                )
                 reproducir_beep()
+                confirmar = True
 
         elif tipo == 'server':
-            linea = f'ℹ️  {color("[SERVIDOR]", Color.VERDE)} {mensaje.get("contenido")}'
+            contenido = mensaje.get('contenido')
+            linea = (
+                f'ℹ️  {color("[SERVIDOR]", Color.VERDE)} '
+                f'{contenido}'
+            )
 
         elif tipo == 'usuarios':
             usuarios = mensaje.get('contenido', [])
             lista = ', '.join(usuarios) or '(ninguno)'
-            linea = f'👥 {color("[USUARIOS]", Color.CIAN)} {lista}'
+            linea = (
+                f'👥 {color("[USUARIOS]", Color.CIAN)} {lista}'
+            )
+
+        elif tipo == 'salas':
+            self.salas = {
+                item.get('nombre'): item.get('usuarios', 0)
+                for item in mensaje.get('contenido', [])
+            }
+            self.sala_actual = mensaje.get(
+                'sala_actual', self.sala_actual
+            )
+            lista = ', '.join(
+                f'{nombre} ({cantidad})'
+                for nombre, cantidad in self.salas.items()
+            ) or '(ninguna)'
+            linea = (
+                f'🚪 {color("[SALAS]", Color.CIAN)} {lista} '
+                f'| actual: {self.sala_actual}'
+            )
+
+        elif tipo == 'sala_actualizada':
+            self.sala_actual = mensaje.get('nombre', 'General')
+            self.historial_mostrado = False
+            linea = (
+                f'🚪 {color("[SALA]", Color.VERDE)} '
+                f'Ahora estás en {self.sala_actual}.'
+            )
 
         elif tipo == 'grupo_actualizado':
             nombre = mensaje.get('nombre')
@@ -326,67 +435,176 @@ class ClienteConsola:
                 'avatar': mensaje.get('avatar', 'gente')
             }
             if es_nuevo:
-                linea = f'👥 {color(f"[GRUPO] Te agregaron al grupo \"{nombre}\"", Color.VERDE)}'
+                linea = (
+                    f'👥 {color(f"[GRUPO] Te agregaron al grupo "
+                    f"\"{nombre}\"", Color.VERDE)}'
+                )
             else:
-                miembros = ', '.join(self.grupos[nombre]['miembros'])
-                linea = f'👥 {color(f"[GRUPO] {nombre} ahora tiene:", Color.VERDE)} {miembros}'
+                miembros = ', '.join(
+                    self.grupos[nombre]['miembros']
+                )
+                linea = (
+                    f'👥 {color(f"[GRUPO] {nombre} ahora tiene:",
+                    Color.VERDE)} {miembros}'
+                )
 
         elif tipo == 'grupo_eliminado':
             nombre = mensaje.get('nombre')
             self.grupos.pop(nombre, None)
-            linea = f'👥 {color(f"[GRUPO] Saliste de \"{nombre}\"", Color.VERDE)}'
+            linea = (
+                f'👥 {color(f"[GRUPO] Saliste de \"{nombre}\"",
+                Color.VERDE)}'
+            )
 
         elif tipo == 'grupo_msg':
             emisor = mensaje.get('emisor')
             grupo = mensaje.get('grupo')
-            contenido = mensaje.get('contenido')
+            contenido = contenido_legible()
             if emisor == self.nickname:
-                linea = f'👥 {color(f"[{grupo}] Tú", Color.VERDE)} {color(hora, Color.GRIS)}: {contenido}'
+                linea = (
+                    f'👥 {color(f"[{grupo}] Tú", Color.VERDE)} '
+                    f'{color(hora, Color.GRIS)}: {contenido}'
+                    f'{marca_estado()}'
+                )
             else:
-                mencionado = es_mencionado(self.nickname, contenido)
+                mencionado = es_mencionado(
+                    self.nickname, contenido
+                )
                 if mencionado:
-                    nombre = color(emisor, Color.BOLD + Color.BLANCO)
+                    nombre = color(
+                        emisor, Color.BOLD + Color.BLANCO
+                    )
                     linea = color(
-                        f' {color(f"[{grupo}]", Color.BOLD)} {nombre} {color(hora, Color.GRIS)}: {contenido} ',
+                        f' {color(f"[{grupo}]", Color.BOLD)} '
+                        f'{nombre} {color(hora, Color.GRIS)}: '
+                        f'{contenido} ',
                         Color.FONDO_AMARILLO
                     )
                 else:
-                    nombre = color(emisor, Color.BOLD + Color.VERDE)
-                    linea = f'👥 {color(f"[{grupo}]", Color.VERDE)} {nombre} {color(hora, Color.GRIS)}: {contenido}'
+                    nombre = color(
+                        emisor, Color.BOLD + Color.VERDE
+                    )
+                    linea = (
+                        f'👥 {color(f"[{grupo}]", Color.VERDE)} '
+                        f'{nombre} {color(hora, Color.GRIS)}: '
+                        f'{contenido}'
+                    )
                 reproducir_beep(mencion=mencionado)
+                confirmar = True
+
+        elif tipo == 'historial_msg':
+            if not self.historial_mostrado:
+                with LOCK_IMPRESION:
+                    print()
+                    print(
+                        _margen_centrado()
+                        + color(
+                            '──── Historial anterior ────',
+                            Color.GRIS
+                        )
+                    )
+                self.historial_mostrado = True
+            contenido = contenido_legible()
+            emisor = mensaje.get('emisor', '?')
+            sala = mensaje.get('sala', self.sala_actual)
+            linea = (
+                f'🕘 {color("[HISTORIAL]", Color.GRIS)} '
+                f'[{hora}] [{sala}] {emisor}: {contenido}'
+            )
 
         elif tipo == 'historial':
             if not self.historial_mostrado:
                 with LOCK_IMPRESION:
                     print()
-                    print(_margen_centrado() + color('──── Historial anterior ────', Color.GRIS))
+                    print(
+                        _margen_centrado()
+                        + color(
+                            '──── Historial anterior ────',
+                            Color.GRIS
+                        )
+                    )
                 self.historial_mostrado = True
-            linea = f'🕘 {color("[HISTORIAL]", Color.GRIS)} {mensaje.get("contenido")}'
+            linea = (
+                f'🕘 {color("[HISTORIAL]", Color.GRIS)} '
+                f'{mensaje.get("contenido")}'
+            )
 
         elif tipo == 'file':
             emisor = mensaje.get('emisor')
             nombre = mensaje.get('nombre_archivo')
-            tipo_archivo = 'IMAGEN' if es_imagen(nombre) else 'ARCHIVO'
+            tipo_archivo = (
+                'IMAGEN' if es_imagen(nombre) else 'ARCHIVO'
+            )
             if emisor == self.nickname:
-                linea = f'📎 {color(f"[{tipo_archivo} enviado]", Color.MAGENTA)} {nombre} → {mensaje.get("destinatario", "todos")}'
+                linea = (
+                    f'📎 {color(f"[{tipo_archivo} enviado]",
+                    Color.MAGENTA)} {nombre} → '
+                    f'{mensaje.get("destinatario", "todos")}'
+                )
             else:
-                ruta = guardar_archivo(emisor, nombre, mensaje.get('datos'))
-                linea = f'📎 {color(f"[{tipo_archivo} de", Color.MAGENTA)} {color(emisor, Color.BOLD)}{color("]", Color.MAGENTA)} {nombre}\n    Guardado en: {ruta}'
+                ruta = guardar_archivo(
+                    emisor, nombre, mensaje.get('datos')
+                )
+                linea = (
+                    f'📎 {color(f"[{tipo_archivo} de",
+                    Color.MAGENTA)} {color(emisor, Color.BOLD)}'
+                    f'{color("]", Color.MAGENTA)} {nombre}\n'
+                    f'    Guardado en: {ruta}'
+                )
                 reproducir_beep()
+
+        elif tipo == 'ack':
+            id_estado = mensaje.get('id_mensaje')
+            self.estados_mensajes[id_estado] = 'ack'
+            linea = (
+                f'✓ {color("[ENTREGADO AL SERVIDOR]", Color.GRIS)} '
+                f'{id_estado[:8] if id_estado else ""}'
+            )
+
+        elif tipo == 'estado':
+            id_estado = mensaje.get('id_mensaje')
+            estado = mensaje.get('estado')
+            self.estados_mensajes[id_estado] = estado
+            simbolo = '✓✓ leído' if estado == 'read' else '✓✓'
+            linea = (
+                f'{simbolo} {color("[ESTADO]", Color.GRIS)} '
+                f'{id_estado[:8] if id_estado else ""} '
+                f'({mensaje.get("entregados", 0)}/'
+                f'{mensaje.get("total_destinatarios", 0)} entregados)'
+            )
+
+        elif tipo == 'error_envio':
+            id_estado = mensaje.get('id_mensaje')
+            self.estados_mensajes[id_estado] = 'error'
+            linea = (
+                f'✗ {color("[NO ENVIADO]", Color.ROJO)} '
+                f'{mensaje.get("contenido")}'
+            )
 
         elif tipo == 'typing':
             emisor = mensaje.get('emisor')
             destinatario = mensaje.get('destinatario')
             if emisor != self.nickname:
-                if destinatario == 'todos' or destinatario == self.nickname:
+                if (
+                    destinatario == 'todos'
+                    or destinatario == self.nickname
+                ):
                     self._mostrar_typing(emisor)
             return
+
+        if confirmar and id_mensaje:
+            try:
+                confirmar_entrega(self.sock, id_mensaje)
+                confirmar_lectura(self.sock, id_mensaje)
+            except Exception:
+                pass
 
         if linea:
             self.historial.append(linea)
             with LOCK_IMPRESION:
                 print(f'\n{linea}')
                 self._mostrar_sign()
+
 
     def _mostrar_server(self, texto):
         linea = f'ℹ️  {color("[SERVIDOR]", Color.VERDE)} {texto}'
@@ -421,40 +639,77 @@ class ClienteConsola:
             if len(partes) < 3:
                 print(color('Uso: /privado <usuario> <mensaje>', Color.ROJO))
                 return
-            enviar_mensaje_privado(self.sock, partes[1], partes[2])
+            id_mensaje = enviar_mensaje_privado(
+                self.sock, partes[1], partes[2]
+            )
+            self.estados_mensajes[id_mensaje] = 'pending'
 
         elif entrada in ('/usuarios', '/u'):
             solicitar_lista(self.sock)
 
+        elif entrada == '/salas':
+            solicitar_salas(self.sock)
+
+        elif entrada.startswith('/crear '):
+            nombre = entrada[len('/crear '):].strip()
+            if not nombre:
+                print(color('Uso: /crear <nombre>', Color.ROJO))
+                return
+            crear_sala(self.sock, nombre)
+
+        elif entrada.startswith('/unirse '):
+            nombre = entrada[len('/unirse '):].strip()
+            if not nombre:
+                print(color('Uso: /unirse <nombre>', Color.ROJO))
+                return
+            unirse_sala(self.sock, nombre)
+
+        elif entrada == '/salirSala':
+            salir_sala(self.sock)
+
         elif entrada.startswith('/archivo ') or entrada.startswith('/a '):
             partes = entrada.split(' ', 2)
             if len(partes) < 2:
-                print(color('Uso: /archivo <ruta> [usuario]', Color.ROJO))
+                print(
+                    color(
+                        'Uso: /archivo <ruta> [usuario]',
+                        Color.ROJO
+                    )
+                )
                 return
             ruta = partes[1]
-            destinatario = partes[2] if len(partes) == 3 else 'todos'
+            destinatario = (
+                partes[2] if len(partes) == 3 else 'todos'
+            )
             if destinatario in self.grupos:
-                # El servidor no sabe rutear archivos a un grupo (manejar_archivo
-                # solo distingue 'todos' vs un nickname puntual) -- sin este
-                # chequeo el archivo se manda a un socket inexistente y se
-                # pierde en silencio, sin ningún error visible.
-                print(color('No se pueden enviar archivos a un grupo por ahora.', Color.ROJO))
+                print(
+                    color(
+                        'No se pueden enviar archivos a un grupo '
+                        'por ahora.',
+                        Color.ROJO
+                    )
+                )
                 return
             if not os.path.exists(ruta):
                 print(color('El archivo no existe.', Color.ROJO))
                 return
             try:
-                # No se imprime confirmación acá -- el servidor hace eco del
-                # archivo de vuelta (mismo patrón que /privado), y
-                # _manejar_mensaje ya lo muestra solo con el mismo formato.
                 enviar_archivo(self.sock, ruta, destinatario)
-            except Exception as e:
-                print(color(f'Error al enviar archivo: {e}', Color.ROJO))
+            except Exception as exc:
+                print(
+                    color(
+                        f'Error al enviar archivo: {exc}',
+                        Color.ROJO
+                    )
+                )
 
         elif entrada in ('/buscar', '/b'):
             print(color('Uso: /buscar <texto>', Color.ROJO))
 
-        elif entrada.startswith('/buscar ') or entrada.startswith('/b '):
+        elif (
+            entrada.startswith('/buscar ')
+            or entrada.startswith('/b ')
+        ):
             partes = entrada.split(' ', 1)
             if len(partes) < 2:
                 print(color('Uso: /buscar <texto>', Color.ROJO))
@@ -464,17 +719,31 @@ class ClienteConsola:
         elif entrada in ('/emoji', '/e'):
             self._enviar_con_emoji()
 
-        elif entrada.startswith('/emoji ') or entrada.startswith('/e '):
+        elif (
+            entrada.startswith('/emoji ')
+            or entrada.startswith('/e ')
+        ):
             partes = entrada.split(' ', 2)
             try:
                 indice = int(partes[1]) - 1
                 emoji = EMOJIS_COMUNES[indice]
             except (ValueError, IndexError):
-                print(color(f'Uso: /emoji <número> [texto]  (número del 1 al {len(EMOJIS_COMUNES)} — usá /emoji para ver la lista)', Color.ROJO))
+                print(
+                    color(
+                        f'Uso: /emoji <número> [texto] '
+                        f'(número del 1 al {len(EMOJIS_COMUNES)})',
+                        Color.ROJO
+                    )
+                )
                 return
             texto = partes[2] if len(partes) == 3 else ''
-            mensaje = f'{emoji} {texto}'.strip() if texto else emoji
-            enviar_mensaje_publico(self.sock, mensaje)
+            mensaje = (
+                f'{emoji} {texto}'.strip() if texto else emoji
+            )
+            id_mensaje = enviar_mensaje_publico(
+                self.sock, mensaje
+            )
+            self.estados_mensajes[id_mensaje] = 'pending'
 
         elif entrada in ('/limpiar', '/clear'):
             self._limpiar()
@@ -490,7 +759,10 @@ class ClienteConsola:
 
         elif entrada == '/grupos':
             if self.grupos:
-                lista = ', '.join(f'{n} ({len(i["miembros"])})' for n, i in self.grupos.items())
+                lista = ', '.join(
+                    f'{nombre} ({len(info["miembros"])})'
+                    for nombre, info in self.grupos.items()
+                )
             else:
                 lista = '(ninguno)'
             print(color(f'Tus grupos: {lista}', Color.VERDE))
@@ -500,34 +772,75 @@ class ClienteConsola:
             if resto.startswith('crear '):
                 partes = resto[len('crear '):].split(' ', 1)
                 if len(partes) < 2:
-                    print(color('Uso: /grupo crear <nombre> <usuario1,usuario2,...>', Color.ROJO))
+                    print(
+                        color(
+                            'Uso: /grupo crear <nombre> '
+                            '<usuario1,usuario2,...>',
+                            Color.ROJO
+                        )
+                    )
                     return
-                miembros = [m.strip() for m in partes[1].split(',') if m.strip()]
-                crear_grupo(self.sock, partes[0], miembros)
+                miembros = [
+                    miembro.strip()
+                    for miembro in partes[1].split(',')
+                    if miembro.strip()
+                ]
+                crear_grupo(
+                    self.sock, partes[0], miembros
+                )
             elif resto.startswith('invitar '):
                 partes = resto[len('invitar '):].split(' ', 1)
                 if len(partes) < 2:
-                    print(color('Uso: /grupo invitar <nombre> <usuario1,usuario2,...>', Color.ROJO))
+                    print(
+                        color(
+                            'Uso: /grupo invitar <nombre> '
+                            '<usuario1,usuario2,...>',
+                            Color.ROJO
+                        )
+                    )
                     return
-                miembros = [m.strip() for m in partes[1].split(',') if m.strip()]
-                invitar_a_grupo(self.sock, partes[0], miembros)
+                miembros = [
+                    miembro.strip()
+                    for miembro in partes[1].split(',')
+                    if miembro.strip()
+                ]
+                invitar_a_grupo(
+                    self.sock, partes[0], miembros
+                )
             elif resto.startswith('salir '):
                 nombre = resto[len('salir '):].strip()
                 if not nombre:
-                    print(color('Uso: /grupo salir <nombre>', Color.ROJO))
+                    print(
+                        color(
+                            'Uso: /grupo salir <nombre>',
+                            Color.ROJO
+                        )
+                    )
                     return
                 salir_grupo(self.sock, nombre)
             else:
                 partes = resto.split(' ', 1)
                 if len(partes) < 2:
-                    print(color('Uso: /grupo <nombre> <mensaje>', Color.ROJO))
+                    print(
+                        color(
+                            'Uso: /grupo <nombre> <mensaje>',
+                            Color.ROJO
+                        )
+                    )
                     return
-                enviar_mensaje_grupo(self.sock, partes[0], partes[1])
+                id_mensaje = enviar_mensaje_grupo(
+                    self.sock, partes[0], partes[1]
+                )
+                self.estados_mensajes[id_mensaje] = 'pending'
 
         else:
-            enviar_mensaje_publico(self.sock, entrada)
+            id_mensaje = enviar_mensaje_publico(
+                self.sock, entrada
+            )
+            self.estados_mensajes[id_mensaje] = 'pending'
 
         return True
+
 
     def _enviar_con_emoji(self):
         imprimir_menu_emojis()
@@ -543,7 +856,8 @@ class ClienteConsola:
 
         texto = input(color(f'Mensaje con {emoji} (Enter para mandar solo el emoji): ', Color.BOLD)).strip()
         mensaje = f'{emoji} {texto}'.strip() if texto else emoji
-        enviar_mensaje_publico(self.sock, mensaje)
+        id_mensaje = enviar_mensaje_publico(self.sock, mensaje)
+        self.estados_mensajes[id_mensaje] = 'pending'
 
     def _buscar(self, texto):
         coincidencias = [linea for linea in self.historial if texto.lower() in linea.lower()]

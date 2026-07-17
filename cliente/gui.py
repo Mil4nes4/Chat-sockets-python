@@ -16,7 +16,9 @@ from cliente.cliente_chat import (
     enviar_mensaje_privado, solicitar_lista, enviar_archivo,
     enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES, enviar_reaccion,
     crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
-    es_mencionado
+    es_mencionado, interpretar_contenido, confirmar_entrega,
+    confirmar_lectura, solicitar_salas, crear_sala, unirse_sala,
+    salir_sala
 )
 
 REACCIONES_RAPIDAS = ['👍', '❤️', '😂', '😮', '😢', '🙏']
@@ -553,6 +555,11 @@ class ChatFrame(ctk.CTkFrame):
         self.cache_avatares = {}  # (nickname, patron, tamano) -> PhotoImage generado
         self.usuarios_actuales = []  # últimos nicknames conectados recibidos
         self.grupos = {}  # nombre -> {'miembros': [...], 'creador': .., 'avatar': ..}
+        self.sala_actual = 'General'
+        self.salas = {'General': 0}
+        self.estados_mensajes = {}  # id -> pending/ack/delivered/read/error
+        self.ids_mensajes_vistos = set()
+        self.lecturas_pendientes = {}  # id -> contexto del mensaje
         self.eventos_chat = []  # registro de cada burbuja mostrada, para poder re-dibujar el chat completo
         self.reacciones_por_mensaje = {}  # id_mensaje -> {emoji: set(nicknames)}
         self._marca_agua_presente = False
@@ -634,13 +641,65 @@ class ChatFrame(ctk.CTkFrame):
         self.frame_usuarios.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 10), pady=10)
         self.frame_usuarios.pack_propagate(False)
 
-        self.boton_chat_general = ctk.CTkButton(
-            self.frame_usuarios, text='💬 Chat general', anchor='w',
-            fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
-            text_color='white', font=('Segoe UI', 14, 'bold'),
-            corner_radius=8, height=34, command=self._ir_a_chat_general
+        self.frame_salas_header = ctk.CTkFrame(
+            self.frame_usuarios, fg_color='transparent'
         )
-        self.boton_chat_general.pack(fill=tk.X, padx=12, pady=(15, 5))
+        self.frame_salas_header.pack(
+            fill=tk.X, padx=12, pady=(15, 4)
+        )
+
+        self.label_salas = ctk.CTkLabel(
+            self.frame_salas_header, text='SALAS',
+            fg_color='transparent',
+            text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 13, 'bold')
+        )
+        self.label_salas.pack(side=tk.LEFT)
+
+        self.boton_crear_sala = ctk.CTkButton(
+            self.frame_salas_header, text='＋ Crear',
+            width=60, height=22,
+            fg_color='transparent',
+            hover_color=self.tema['borde'],
+            text_color=self.tema['acento'],
+            font=('Segoe UI', 12, 'bold'),
+            corner_radius=6,
+            command=self._mostrar_crear_sala
+        )
+        self.boton_crear_sala.pack(side=tk.RIGHT)
+
+        self.combo_salas = ctk.CTkComboBox(
+            self.frame_usuarios,
+            values=['General'],
+            state='readonly',
+            fg_color=self.tema['entrada'],
+            text_color=self.tema['texto'],
+            border_color=self.tema['borde'],
+            button_color=self.tema['borde'],
+            button_hover_color=self.tema['acento'],
+            dropdown_fg_color=self.tema['entrada'],
+            dropdown_text_color=self.tema['texto'],
+            font=('Segoe UI', 13),
+            command=self._seleccionar_sala
+        )
+        self.combo_salas.set('General')
+        self.combo_salas.pack(
+            fill=tk.X, padx=12, pady=(0, 5)
+        )
+
+        self.boton_chat_general = ctk.CTkButton(
+            self.frame_usuarios, text='↩ Volver a General',
+            anchor='w',
+            fg_color=self.tema['entrada'],
+            hover_color=self.tema['borde'],
+            text_color=self.tema['texto'],
+            font=('Segoe UI', 13),
+            corner_radius=8, height=30,
+            command=self._ir_a_chat_general
+        )
+        self.boton_chat_general.pack(
+            fill=tk.X, padx=12, pady=(0, 5)
+        )
 
         self.label_usuarios = ctk.CTkLabel(
             self.frame_usuarios, text='USUARIOS EN LÍNEA', fg_color='transparent',
@@ -812,7 +871,30 @@ class ChatFrame(ctk.CTkFrame):
         self.entry_busqueda.configure(fg_color=tema['entrada'], text_color=tema['texto'], border_color=tema['borde'])
         self.frame_central.configure(bg=tema['fondo'])
         self.frame_usuarios.configure(bg=tema['panel'])
-        self.boton_chat_general.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
+        self.frame_salas_header.configure(bg_color=tema['panel'])
+        self.label_salas.configure(
+            bg_color=tema['panel'],
+            text_color=tema['texto_secundario']
+        )
+        self.boton_crear_sala.configure(
+            bg_color=tema['panel'],
+            hover_color=tema['borde'],
+            text_color=tema['acento']
+        )
+        self.combo_salas.configure(
+            fg_color=tema['entrada'],
+            text_color=tema['texto'],
+            border_color=tema['borde'],
+            button_color=tema['borde'],
+            button_hover_color=tema['acento'],
+            dropdown_fg_color=tema['entrada'],
+            dropdown_text_color=tema['texto']
+        )
+        self.boton_chat_general.configure(
+            fg_color=tema['entrada'],
+            hover_color=tema['borde'],
+            text_color=tema['texto']
+        )
         # label_usuarios y frame_grupos_header tienen fg_color='transparent', lo que
         # internamente los pinta con su propio bg_color en vez de ser realmente
         # invisibles. Como su padre (frame_usuarios) es un tk.Frame común y no un
@@ -987,6 +1069,96 @@ class ChatFrame(ctk.CTkFrame):
         self.entry_mensaje.insert(tk.INSERT, emoji)
         ventana.destroy()
         self.entry_mensaje.focus()
+
+    def _mostrar_crear_sala(self):
+        ventana = ctk.CTkToplevel(self)
+        ventana.title('Crear sala')
+        ventana.resizable(False, False)
+        ventana.configure(fg_color=self.tema['panel'])
+        ventana.transient(self.winfo_toplevel())
+
+        ctk.CTkLabel(
+            ventana,
+            text='Nombre de la nueva sala',
+            text_color=self.tema['texto_secundario'],
+            font=('Segoe UI', 12),
+            anchor='w'
+        ).pack(fill=tk.X, padx=16, pady=(16, 4))
+
+        entry_nombre = ctk.CTkEntry(
+            ventana,
+            width=300,
+            fg_color=self.tema['entrada'],
+            text_color=self.tema['texto'],
+            border_color=self.tema['borde'],
+            border_width=1,
+            corner_radius=8,
+            font=('Segoe UI', 14)
+        )
+        entry_nombre.pack(fill=tk.X, padx=16)
+        entry_nombre.focus()
+
+        label_error = ctk.CTkLabel(
+            ventana,
+            text='',
+            text_color='#ed4245',
+            font=('Segoe UI', 11)
+        )
+        label_error.pack(pady=(6, 0))
+
+        def confirmar():
+            nombre = entry_nombre.get().strip()
+            if not nombre:
+                label_error.configure(
+                    text='Escribe un nombre para la sala.'
+                )
+                return
+            crear_sala(self.sock, nombre)
+            ventana.destroy()
+
+        ctk.CTkButton(
+            ventana,
+            text='Crear y entrar',
+            command=confirmar,
+            fg_color=self.tema['acento'],
+            hover_color=self.tema['acento_hover'],
+            text_color='white',
+            height=36,
+            corner_radius=8,
+            font=('Segoe UI', 13, 'bold')
+        ).pack(fill=tk.X, padx=16, pady=(10, 16))
+
+        entry_nombre.bind(
+            '<Return>', lambda _evento: confirmar()
+        )
+
+    def _seleccionar_sala(self, nombre_sala):
+        if (
+            not self.conectado
+            or not nombre_sala
+            or nombre_sala == self.sala_actual
+        ):
+            return
+        unirse_sala(self.sock, nombre_sala)
+
+    def _actualizar_salas(self, elementos, sala_actual=None):
+        self.salas = {
+            item.get('nombre'): item.get('usuarios', 0)
+            for item in elementos
+            if item.get('nombre')
+        }
+        if not self.salas:
+            self.salas = {'General': 0}
+
+        valores = list(self.salas.keys())
+        self.combo_salas.configure(values=valores)
+
+        if sala_actual:
+            self.sala_actual = sala_actual
+        if self.sala_actual not in self.salas:
+            self.sala_actual = 'General'
+        self.combo_salas.set(self.sala_actual)
+        self._actualizar_titulo_vista()
 
     def _mostrar_crear_grupo(self):
         if not any(u != self.nickname for u in self.usuarios_actuales):
@@ -1202,58 +1374,122 @@ class ChatFrame(ctk.CTkFrame):
     def _evento_visible(self, evento, vista):
         if evento['tipo'] == 'grupo':
             return vista == f'Grupo: {evento["grupo"]}'
-        # Mensajes públicos, privados, de archivo, server e historial se ven
-        # siempre en el feed general -- "Para: <usuario>" solo elige a quién
-        # se manda el próximo mensaje, no filtra la vista (a diferencia de
-        # los grupos, que sí tienen su propia pestaña separada).
-        return not vista.startswith('Grupo: ')
 
-    def _agregar_burbuja(self, emisor, contenido, hora, tipo='msg', alinear='izquierda', extra='',
-                          id_mensaje=None, grupo=None):
+        if vista.startswith('Grupo: '):
+            return False
+
+        if evento.get('sala'):
+            return evento['sala'] == self.sala_actual
+
+        return True
+
+    def _texto_estado(self, id_mensaje):
+        estado = self.estados_mensajes.get(
+            id_mensaje, 'pending'
+        )
+        return {
+            'pending': 'Enviando…',
+            'ack': '✓ Recibido por el servidor',
+            'delivered': '✓✓ Entregado',
+            'read': '✓✓ Leído',
+            'error': '✗ No enviado',
+        }.get(estado, '')
+
+    def _agregar_burbuja(
+        self, emisor, contenido, hora, tipo='msg',
+        alinear='izquierda', extra='', id_mensaje=None,
+        grupo=None, sala=None, historico=False,
+        destinatario=None
+    ):
         evento = {
-            'emisor': emisor, 'contenido': contenido, 'hora': hora,
-            'tipo': tipo, 'extra': extra, 'id_mensaje': id_mensaje, 'grupo': grupo
+            'emisor': emisor,
+            'contenido': contenido,
+            'hora': hora,
+            'tipo': tipo,
+            'extra': extra,
+            'id_mensaje': id_mensaje,
+            'grupo': grupo,
+            'sala': sala,
+            'historico': historico,
+            'destinatario': destinatario,
         }
         self.eventos_chat.append(evento)
 
-        if not self._evento_visible(evento, self.combo_destinatario.get()):
-            return
+        if not self._evento_visible(
+            evento, self.combo_destinatario.get()
+        ):
+            return False
 
         reacciones_texto = ''
         if id_mensaje is not None:
-            reacciones = self.reacciones_por_mensaje.get(id_mensaje)
+            reacciones = self.reacciones_por_mensaje.get(
+                id_mensaje
+            )
             if reacciones:
-                reacciones_texto = '  '.join(f'{emoji} {len(nicks)}' for emoji, nicks in reacciones.items())
+                reacciones_texto = '  '.join(
+                    f'{emoji} {len(nicks)}'
+                    for emoji, nicks in reacciones.items()
+                )
 
         self.area_chat.configure(state=tk.NORMAL)
         self._limpiar_marca_agua()
 
+        if historico and not self._historial_mostrado:
+            self.area_chat.insert(tk.END, '\n')
+            self.area_chat.insert(
+                tk.END,
+                f'──── Historial de {sala or self.sala_actual} ────\n',
+                'divisor'
+            )
+            self._historial_mostrado = True
+
         if tipo == 'server':
             self.area_chat.insert(tk.END, '\n')
-            self.area_chat.insert(tk.END, f'{contenido}\n', 'server_texto')
+            self.area_chat.insert(
+                tk.END, f'{contenido}\n', 'server_texto'
+            )
         elif tipo == 'historial':
             if not self._historial_mostrado:
                 self.area_chat.insert(tk.END, '\n')
-                self.area_chat.insert(tk.END, '──── Historial anterior ────\n', 'divisor')
+                self.area_chat.insert(
+                    tk.END,
+                    '──── Historial anterior ────\n',
+                    'divisor'
+                )
                 self._historial_mostrado = True
-            self.area_chat.insert(tk.END, f'{hora} ', 'hora')
-            self.area_chat.insert(tk.END, f'{contenido}\n', 'historial_texto')
+            self.area_chat.insert(
+                tk.END, f'{hora} ', 'hora'
+            )
+            self.area_chat.insert(
+                tk.END,
+                f'{contenido}\n',
+                'historial_texto'
+            )
         else:
-            es_propio = (emisor == self.nickname)
+            es_propio = emisor == self.nickname
             mencionado = (
-                tipo in ('msg', 'grupo') and not es_propio
-                and es_mencionado(self.nickname, contenido)
+                tipo in ('msg', 'grupo')
+                and not es_propio
+                and es_mencionado(
+                    self.nickname, contenido
+                )
             )
             inicio = self.area_chat.index(tk.END)
             self.area_chat.insert(tk.END, '\n')
 
-            prefijo_grupo = f'[{grupo}] ' if tipo == 'grupo' else ''
+            prefijo_grupo = (
+                f'[{grupo}] ' if tipo == 'grupo' else ''
+            )
 
             if tipo == 'priv':
                 tag_nombre = 'nombre_privado'
                 tag_texto = 'privado_texto'
                 tag_hora = 'hora_privado'
-                prefijo = '[Privado] Tú' if es_propio else f'[Privado] {emisor}'
+                prefijo = (
+                    '[Privado] Tú'
+                    if es_propio
+                    else f'[Privado] {emisor}'
+                )
             elif tipo == 'archivo':
                 tag_nombre = 'nombre_archivo'
                 tag_texto = 'archivo_texto'
@@ -1280,39 +1516,92 @@ class ChatFrame(ctk.CTkFrame):
                 tag_hora = 'hora_otro'
                 prefijo = emisor
 
-            self.area_chat.insert(tk.END, '┃ ', tag_texto)
-            if tipo in ('msg', 'grupo') and not es_propio:
-                avatar_img = self._obtener_avatar(emisor, 18)
-                self.area_chat._textbox.image_create(tk.END, image=avatar_img)
-                self.area_chat.insert(tk.END, ' ', tag_nombre)
-                self.area_chat.insert(tk.END, f'{prefijo}  ', tag_nombre)
+            self.area_chat.insert(
+                tk.END, '┃ ', tag_texto
+            )
+            if (
+                tipo in ('msg', 'grupo')
+                and not es_propio
+            ):
+                avatar_img = self._obtener_avatar(
+                    emisor, 18
+                )
+                self.area_chat._textbox.image_create(
+                    tk.END, image=avatar_img
+                )
+                self.area_chat.insert(
+                    tk.END, ' ', tag_nombre
+                )
+                self.area_chat.insert(
+                    tk.END,
+                    f'{prefijo}  ',
+                    tag_nombre
+                )
             else:
-                self.area_chat.insert(tk.END, f'{prefijo}  ', tag_nombre)
-            self.area_chat.insert(tk.END, f'{hora}\n', tag_hora)
-            self.area_chat.insert(tk.END, '┃ ', tag_texto)
-            self.area_chat.insert(tk.END, f'{contenido}\n', tag_texto)
+                self.area_chat.insert(
+                    tk.END,
+                    f'{prefijo}  ',
+                    tag_nombre
+                )
+
+            self.area_chat.insert(
+                tk.END, f'{hora}\n', tag_hora
+            )
+            self.area_chat.insert(
+                tk.END, '┃ ', tag_texto
+            )
+            self.area_chat.insert(
+                tk.END, f'{contenido}\n', tag_texto
+            )
 
             if extra:
-                self.area_chat.insert(tk.END, f'{extra}\n', tag_hora)
+                self.area_chat.insert(
+                    tk.END, f'{extra}\n', tag_hora
+                )
 
             if reacciones_texto:
-                self.area_chat.insert(tk.END, f'{reacciones_texto}\n', tag_hora)
+                self.area_chat.insert(
+                    tk.END,
+                    f'{reacciones_texto}\n',
+                    tag_hora
+                )
+
+            if es_propio and id_mensaje is not None:
+                estado_texto = self._texto_estado(
+                    id_mensaje
+                )
+                if estado_texto:
+                    self.area_chat.insert(
+                        tk.END,
+                        f'{estado_texto}\n',
+                        tag_hora
+                    )
 
             fin = self.area_chat.index(tk.END)
 
             if id_mensaje is not None:
                 tag_mensaje = f'msg_{id_mensaje}'
-                self.area_chat.tag_add(tag_mensaje, inicio, fin)
+                self.area_chat.tag_add(
+                    tag_mensaje, inicio, fin
+                )
                 self.area_chat._textbox.tag_bind(
-                    tag_mensaje, '<Button-3>',
-                    lambda e, i=id_mensaje: self._mostrar_selector_reaccion(e, i)
+                    tag_mensaje,
+                    '<Button-3>',
+                    lambda evento, identificador=id_mensaje:
+                    self._mostrar_selector_reaccion(
+                        evento, identificador
+                    )
                 )
 
             if es_propio:
-                self.area_chat.tag_add('derecha', inicio, fin)
+                self.area_chat.tag_add(
+                    'derecha', inicio, fin
+                )
 
         self.area_chat.see(tk.END)
         self.area_chat.configure(state=tk.DISABLED)
+        return True
+
 
     def _mostrar_preview_imagen(self, ruta, emisor):
         if not PIL_DISPONIBLE:
@@ -1336,109 +1625,436 @@ class ChatFrame(ctk.CTkFrame):
         except Exception:
             return False
 
+    def _contenido_legible(self, mensaje):
+        try:
+            return interpretar_contenido(mensaje)
+        except ValueError:
+            return (
+                '[No se pudo descifrar. Verifica que todos '
+                'usen el mismo archivo clave_chat.key.]'
+            )
+
+    def _registrar_confirmacion_entrante(
+        self, mensaje, visible
+    ):
+        id_mensaje = mensaje.get('id')
+        emisor = mensaje.get('emisor')
+        if (
+            not id_mensaje
+            or not emisor
+            or emisor == self.nickname
+        ):
+            return
+
+        try:
+            confirmar_entrega(self.sock, id_mensaje)
+        except Exception:
+            pass
+
+        if visible:
+            try:
+                confirmar_lectura(
+                    self.sock, id_mensaje
+                )
+            except Exception:
+                pass
+        else:
+            self.lecturas_pendientes[id_mensaje] = {
+                'tipo': mensaje.get('tipo'),
+                'grupo': mensaje.get('grupo'),
+                'sala': mensaje.get('sala'),
+            }
+
+    def _confirmar_lecturas_visibles(self):
+        vista = self.combo_destinatario.get()
+        confirmados = []
+
+        for id_mensaje, contexto in (
+            self.lecturas_pendientes.items()
+        ):
+            tipo = contexto.get('tipo')
+            if tipo == 'grupo_msg':
+                visible = (
+                    vista
+                    == f'Grupo: {contexto.get("grupo")}'
+                )
+            elif tipo == 'msg':
+                visible = (
+                    not vista.startswith('Grupo: ')
+                    and contexto.get('sala')
+                    == self.sala_actual
+                )
+            else:
+                visible = not vista.startswith('Grupo: ')
+
+            if visible:
+                try:
+                    confirmar_lectura(
+                        self.sock, id_mensaje
+                    )
+                    confirmados.append(id_mensaje)
+                except Exception:
+                    pass
+
+        for id_mensaje in confirmados:
+            self.lecturas_pendientes.pop(
+                id_mensaje, None
+            )
+
     def _manejar_mensaje(self, mensaje):
         tipo = mensaje.get('tipo')
         hora = mensaje.get('hora', '')
+        id_mensaje = mensaje.get('id')
+
+        if tipo in (
+            'msg', 'priv', 'grupo_msg',
+            'historial_msg', 'file'
+        ):
+            if (
+                id_mensaje
+                and id_mensaje in self.ids_mensajes_vistos
+            ):
+                return
+            if id_mensaje:
+                self.ids_mensajes_vistos.add(
+                    id_mensaje
+                )
 
         if tipo == 'msg':
             emisor = mensaje.get('emisor')
-            contenido = mensaje.get('contenido', '')
-            self._agregar_burbuja(emisor, contenido, hora, 'msg', id_mensaje=mensaje.get('id'))
+            contenido = self._contenido_legible(
+                mensaje
+            )
+            visible = self._agregar_burbuja(
+                emisor,
+                contenido,
+                hora,
+                'msg',
+                id_mensaje=id_mensaje,
+                sala=mensaje.get(
+                    'sala', self.sala_actual
+                )
+            )
             if emisor != self.nickname:
-                mencionado = es_mencionado(self.nickname, contenido)
-                reproducir_beep(mencion=mencionado)
+                mencionado = es_mencionado(
+                    self.nickname, contenido
+                )
+                reproducir_beep(
+                    mencion=mencionado
+                )
+                self._registrar_confirmacion_entrante(
+                    mensaje, visible
+                )
 
         elif tipo == 'priv':
             emisor = mensaje.get('emisor')
-            self._agregar_burbuja(emisor, mensaje['contenido'], hora, 'priv', id_mensaje=mensaje.get('id'))
+            contenido = self._contenido_legible(
+                mensaje
+            )
+            visible = self._agregar_burbuja(
+                emisor,
+                contenido,
+                hora,
+                'priv',
+                id_mensaje=id_mensaje,
+                destinatario=mensaje.get(
+                    'destinatario'
+                )
+            )
             if emisor != self.nickname:
                 reproducir_beep()
+                self._registrar_confirmacion_entrante(
+                    mensaje, visible
+                )
 
         elif tipo == 'server':
-            contenido = mensaje['contenido']
-            if contenido.startswith('GRUPO_INVALIDO: '):
-                # La confirmación de "Crear grupo"/"Invitar" cierra el modal
-                # al instante (crear_grupo() es asíncrono, no hay forma de
-                # saber ahí mismo si el servidor lo va a rechazar). Sin este
-                # aviso, un error como nombre repetido o palabra reservada
-                # solo quedaba como una burbuja más, fácil de perderse una
-                # vez que el modal ya se cerró.
-                texto_error = contenido[len('GRUPO_INVALIDO: '):]
-                messagebox.showerror('Grupo', texto_error.capitalize())
-            self._agregar_burbuja('', contenido, '', 'server')
+            contenido = mensaje.get('contenido', '')
+            if contenido.startswith(
+                'GRUPO_INVALIDO: '
+            ):
+                texto_error = contenido[
+                    len('GRUPO_INVALIDO: '):
+                ]
+                messagebox.showerror(
+                    'Grupo',
+                    texto_error.capitalize()
+                )
+            elif contenido.startswith(
+                'SALA_INVALIDA: '
+            ):
+                texto_error = contenido[
+                    len('SALA_INVALIDA: '):
+                ]
+                messagebox.showerror(
+                    'Sala', texto_error
+                )
+                self.combo_salas.set(
+                    self.sala_actual
+                )
+            elif contenido == 'MENSAJE_NO_CIFRADO':
+                messagebox.showerror(
+                    'Seguridad',
+                    'El servidor rechazó un mensaje '
+                    'sin cifrado.'
+                )
+            self._agregar_burbuja(
+                '',
+                contenido,
+                '',
+                'server',
+                sala=mensaje.get('sala')
+            )
 
         elif tipo == 'usuarios':
-            self.avatares_usuarios.update(mensaje.get('avatares', {}))
-            self.colores_usuarios.update(mensaje.get('colores', {}))
-            self._actualizar_usuarios(mensaje.get('contenido', []))
+            self.avatares_usuarios.update(
+                mensaje.get('avatares', {})
+            )
+            self.colores_usuarios.update(
+                mensaje.get('colores', {})
+            )
+            self._actualizar_usuarios(
+                mensaje.get('contenido', [])
+            )
+
+        elif tipo == 'salas':
+            self._actualizar_salas(
+                mensaje.get('contenido', []),
+                mensaje.get('sala_actual')
+            )
+
+        elif tipo == 'sala_actualizada':
+            self.sala_actual = mensaje.get(
+                'nombre', 'General'
+            )
+            self.combo_salas.set(
+                self.sala_actual
+            )
+            self.combo_destinatario.set('Todos')
+            self._historial_mostrado = False
+            self._redibujar_chat()
+            self._actualizar_titulo_vista()
+            self._confirmar_lecturas_visibles()
+            self._agregar_burbuja(
+                '',
+                f'Entraste a la sala '
+                f'"{self.sala_actual}".',
+                '',
+                'server',
+                sala=self.sala_actual
+            )
 
         elif tipo == 'grupo_actualizado':
             nombre = mensaje.get('nombre')
             es_nuevo = nombre not in self.grupos
             self.grupos[nombre] = {
-                'miembros': mensaje.get('miembros', []),
-                'creador': mensaje.get('creador'),
-                'avatar': mensaje.get('avatar', 'gente')
+                'miembros': mensaje.get(
+                    'miembros', []
+                ),
+                'creador': mensaje.get(
+                    'creador'
+                ),
+                'avatar': mensaje.get(
+                    'avatar', 'gente'
+                )
             }
             self._actualizar_grupos()
             if es_nuevo:
-                self._agregar_burbuja('', f'Te agregaron al grupo "{nombre}".', '', 'server')
+                self._agregar_burbuja(
+                    '',
+                    f'Te agregaron al grupo '
+                    f'"{nombre}".',
+                    '',
+                    'server'
+                )
 
         elif tipo == 'grupo_eliminado':
             nombre = mensaje.get('nombre')
             self.grupos.pop(nombre, None)
             self._actualizar_grupos()
-            if self.combo_destinatario.get() == f'Grupo: {nombre}':
-                self.combo_destinatario.set('Todos')
+            if (
+                self.combo_destinatario.get()
+                == f'Grupo: {nombre}'
+            ):
+                self.combo_destinatario.set(
+                    'Todos'
+                )
                 self._redibujar_chat()
 
         elif tipo == 'grupo_msg':
             emisor = mensaje.get('emisor')
             nombre_grupo = mensaje.get('grupo')
-            contenido = mensaje.get('contenido', '')
-            self._agregar_burbuja(
-                emisor, contenido, hora, 'grupo', grupo=nombre_grupo, id_mensaje=mensaje.get('id')
+            contenido = self._contenido_legible(
+                mensaje
+            )
+            visible = self._agregar_burbuja(
+                emisor,
+                contenido,
+                hora,
+                'grupo',
+                grupo=nombre_grupo,
+                id_mensaje=id_mensaje
             )
             if emisor != self.nickname:
-                mencionado = es_mencionado(self.nickname, contenido)
-                reproducir_beep(mencion=mencionado)
+                mencionado = es_mencionado(
+                    self.nickname, contenido
+                )
+                reproducir_beep(
+                    mencion=mencionado
+                )
+                self._registrar_confirmacion_entrante(
+                    mensaje, visible
+                )
+
+        elif tipo == 'historial_msg':
+            contenido = self._contenido_legible(
+                mensaje
+            )
+            self._agregar_burbuja(
+                mensaje.get('emisor', ''),
+                contenido,
+                hora,
+                'msg',
+                id_mensaje=id_mensaje,
+                sala=mensaje.get(
+                    'sala', self.sala_actual
+                ),
+                historico=True
+            )
 
         elif tipo == 'historial':
-            self._agregar_burbuja('', mensaje['contenido'], '', 'historial')
+            self._agregar_burbuja(
+                '',
+                mensaje.get('contenido', ''),
+                '',
+                'historial'
+            )
 
         elif tipo == 'file':
             emisor = mensaje.get('emisor')
-            nombre = mensaje.get('nombre_archivo')
+            nombre = mensaje.get(
+                'nombre_archivo'
+            )
             es_propio = emisor == self.nickname
-            ruta = guardar_archivo(emisor, nombre, mensaje.get('datos'))
+            ruta = guardar_archivo(
+                emisor,
+                nombre,
+                mensaje.get('datos')
+            )
+            destinatario_original = mensaje.get(
+                'destinatario', 'todos'
+            )
             if es_propio:
-                destinatario_mostrado = mensaje.get('destinatario', 'todos')
-                if destinatario_mostrado == 'todos':
-                    destinatario_mostrado = 'Todos'
-                extra = f'Enviado a {destinatario_mostrado}'
+                destinatario_mostrado = (
+                    'Todos'
+                    if destinatario_original
+                    == 'todos'
+                    else destinatario_original
+                )
+                extra = (
+                    f'Enviado a '
+                    f'{destinatario_mostrado}'
+                )
             else:
                 extra = f'Guardado en: {ruta}'
                 reproducir_beep()
+
             if es_imagen(nombre):
-                self._mostrar_preview_imagen(ruta, emisor)
-            self._agregar_burbuja(emisor, f'Archivo: {nombre}', hora, 'archivo', extra=extra, id_mensaje=mensaje.get('id'))
+                self._mostrar_preview_imagen(
+                    ruta, emisor
+                )
+
+            self._agregar_burbuja(
+                emisor,
+                f'Archivo: {nombre}',
+                hora,
+                'archivo',
+                extra=extra,
+                id_mensaje=id_mensaje,
+                sala=mensaje.get('sala'),
+                destinatario=destinatario_original
+            )
+
+        elif tipo == 'ack':
+            id_estado = mensaje.get(
+                'id_mensaje'
+            )
+            self.estados_mensajes[
+                id_estado
+            ] = 'ack'
+            self._redibujar_chat()
+
+        elif tipo == 'estado':
+            id_estado = mensaje.get(
+                'id_mensaje'
+            )
+            self.estados_mensajes[
+                id_estado
+            ] = mensaje.get(
+                'estado', 'delivered'
+            )
+            self._redibujar_chat()
+
+        elif tipo == 'error_envio':
+            id_estado = mensaje.get(
+                'id_mensaje'
+            )
+            self.estados_mensajes[
+                id_estado
+            ] = 'error'
+            self._redibujar_chat()
+            messagebox.showerror(
+                'Mensaje no enviado',
+                mensaje.get(
+                    'contenido',
+                    'No se pudo enviar el mensaje.'
+                )
+            )
 
         elif tipo == 'reaccion':
-            self._registrar_reaccion(mensaje.get('id_mensaje'), mensaje.get('emisor'), mensaje.get('emoji'))
+            self._registrar_reaccion(
+                mensaje.get('id_mensaje'),
+                mensaje.get('emisor'),
+                mensaje.get('emoji')
+            )
 
         elif tipo == 'typing':
             emisor = mensaje.get('emisor')
-            destinatario = mensaje.get('destinatario')
+            destinatario = mensaje.get(
+                'destinatario'
+            )
+            sala = mensaje.get('sala')
+            vista_general = not (
+                self.combo_destinatario.get()
+                .startswith('Grupo: ')
+            )
             if emisor != self.nickname:
-                if destinatario == 'todos' or destinatario == self.nickname:
+                if (
+                    destinatario == self.nickname
+                    or (
+                        destinatario == 'todos'
+                        and sala == self.sala_actual
+                        and vista_general
+                    )
+                ):
                     self._mostrar_typing(emisor)
 
         elif tipo == 'desconexion':
-            self._agregar_burbuja('', 'Desconectado del servidor', '', 'server')
+            self._agregar_burbuja(
+                '',
+                'Desconectado del servidor',
+                '',
+                'server'
+            )
             self.conectado = False
 
         elif tipo == 'error':
-            self._agregar_burbuja('', f'Error: {mensaje.get("contenido")}', '', 'server')
+            self._agregar_burbuja(
+                '',
+                f'Error: {mensaje.get("contenido")}',
+                '',
+                'server'
+            )
+
 
     def _registrar_reaccion(self, id_mensaje, emisor, emoji):
         if id_mensaje is None or not emoji:
@@ -1472,8 +2088,16 @@ class ChatFrame(ctk.CTkFrame):
         else:
             for ev in eventos:
                 self._agregar_burbuja(
-                    ev['emisor'], ev['contenido'], ev['hora'], ev['tipo'],
-                    extra=ev['extra'], id_mensaje=ev['id_mensaje'], grupo=ev.get('grupo')
+                    ev['emisor'],
+                    ev['contenido'],
+                    ev['hora'],
+                    ev['tipo'],
+                    extra=ev['extra'],
+                    id_mensaje=ev['id_mensaje'],
+                    grupo=ev.get('grupo'),
+                    sala=ev.get('sala'),
+                    historico=ev.get('historico', False),
+                    destinatario=ev.get('destinatario')
                 )
             # Nota: los previews de imagen embebidos (_mostrar_preview_imagen)
             # no se re-insertan en un redibujado -- se pierde el thumbnail
@@ -1525,6 +2149,7 @@ class ChatFrame(ctk.CTkFrame):
     def _cambiar_vista(self, _valor_elegido=None):
         self._redibujar_chat()
         self._actualizar_titulo_vista()
+        self._confirmar_lecturas_visibles()
 
     def _destinatario_protocolo(self):
         # El combo muestra 'Todos' (mayúscula, para que se lea bien), pero
@@ -1538,16 +2163,36 @@ class ChatFrame(ctk.CTkFrame):
 
     def _ir_a_chat_general(self):
         self.combo_destinatario.set('Todos')
-        self._cambiar_vista()
+        if self.sala_actual != 'General':
+            salir_sala(self.sock)
+        else:
+            self._cambiar_vista()
 
     def _actualizar_titulo_vista(self):
         vista = self.combo_destinatario.get()
         if vista.startswith('Grupo: '):
             nombre = vista[len('Grupo: '):]
-            n = len(self.grupos.get(nombre, {}).get('miembros', []))
-            self.label_titulo.configure(text=f'👥 {nombre} · {n} miembro{"s" if n != 1 else ""}')
+            cantidad = len(
+                self.grupos.get(
+                    nombre, {}
+                ).get('miembros', [])
+            )
+            self.label_titulo.configure(
+                text=(
+                    f'👥 {nombre} · {cantidad} '
+                    f'miembro{"s" if cantidad != 1 else ""}'
+                )
+            )
         else:
-            self.label_titulo.configure(text=f'👾 Chat con Sockets - {len(self.usuarios_actuales)} en línea')
+            cantidad = self.salas.get(
+                self.sala_actual, 0
+            )
+            self.label_titulo.configure(
+                text=(
+                    f'🚪 {self.sala_actual} · '
+                    f'{cantidad} en la sala'
+                )
+            )
 
     def _salir_de_grupo(self, nombre_grupo):
         salir_grupo(self.sock, nombre_grupo)
@@ -1603,13 +2248,33 @@ class ChatFrame(ctk.CTkFrame):
             return
 
         destinatario = self.combo_destinatario.get()
-        if destinatario == 'Todos':
-            enviar_mensaje_publico(self.sock, texto)
-        elif destinatario.startswith('Grupo: '):
-            enviar_mensaje_grupo(self.sock, destinatario[len('Grupo: '):], texto)
-        else:
-            enviar_mensaje_privado(self.sock, destinatario, texto)
+        try:
+            if destinatario == 'Todos':
+                id_mensaje = enviar_mensaje_publico(
+                    self.sock, texto
+                )
+            elif destinatario.startswith('Grupo: '):
+                id_mensaje = enviar_mensaje_grupo(
+                    self.sock,
+                    destinatario[len('Grupo: '):],
+                    texto
+                )
+            else:
+                id_mensaje = enviar_mensaje_privado(
+                    self.sock,
+                    destinatario,
+                    texto
+                )
+        except Exception as exc:
+            messagebox.showerror(
+                'Error',
+                f'No se pudo enviar el mensaje: {exc}'
+            )
+            return
 
+        self.estados_mensajes[
+            id_mensaje
+        ] = 'pending'
         self.entry_mensaje.delete(0, tk.END)
 
     def _enviar_archivo(self):
@@ -1706,21 +2371,50 @@ class ChatGUI:
             self.chat_frame._historial_mostrado = False
             self.chat_frame._mostrar_marca_agua()
 
-    def _conectar(self, ip, puerto, nickname, avatar='circulo', color=None):
+    def _conectar(
+        self, ip, puerto, nickname,
+        avatar='circulo', color=None
+    ):
         try:
             self.sock = conectar(ip, puerto)
-        except Exception as e:
-            self.login_frame.mostrar_error(f'No se pudo conectar: {e}')
-            return
-
-        enviar_nickname(self.sock, nickname, avatar, color)
-        respuesta = recibir(self.sock)
-
-        if respuesta and respuesta.get('contenido') == 'NICK_INVALIDO':
-            self.login_frame.mostrar_error('Nickname ya en uso o inválido.')
-            self.sock.close()
+            enviar_nickname(
+                self.sock, nickname, avatar, color
+            )
+            respuesta = recibir(self.sock)
+        except Exception as exc:
+            self.login_frame.mostrar_error(
+                f'No se pudo conectar: {exc}'
+            )
+            if self.sock:
+                try:
+                    self.sock.close()
+                except Exception:
+                    pass
             self.sock = None
             return
+
+        if respuesta:
+            codigo = respuesta.get('contenido')
+            errores = {
+                'NICK_INVALIDO': (
+                    'Nickname ya en uso o inválido.'
+                ),
+                'CLAVE_REQUERIDA': (
+                    'El cliente debe usar cifrado Fernet.'
+                ),
+                'CLAVE_INCOMPATIBLE': (
+                    'La clave no coincide. Copia el mismo '
+                    'archivo cliente/clave_chat.key en '
+                    'todos los clientes.'
+                ),
+            }
+            if codigo in errores:
+                self.login_frame.mostrar_error(
+                    errores[codigo]
+                )
+                self.sock.close()
+                self.sock = None
+                return
 
         self.nickname = nickname
         self.conectado = True
