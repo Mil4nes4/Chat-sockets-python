@@ -13,7 +13,8 @@ from cliente.cliente_chat import (
     enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES,
     crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
     es_mencionado, enviar_ping, solicitar_stats, solicitar_whois,
-    editar_mensaje, eliminar_mensaje
+    editar_mensaje, eliminar_mensaje, confirmar_entrega, confirmar_lectura,
+    crear_sala, unirse_sala
 )
 
 
@@ -172,6 +173,9 @@ def imprimir_ayuda():
         print(f'{margen}  {color("/grupo salir", Color.AMARILLO)} <nombre>            Salir de un grupo')
         print(f'{margen}  {color("/grupo", Color.AMARILLO)} <nombre> <mensaje>       Mandar mensaje al grupo')
         print(f'{margen}  {color("/grupos", Color.AMARILLO)}                       Ver tus grupos')
+        print(f'{margen}  {color("/salas", Color.AMARILLO)}                        Ver las salas y en cuál estás')
+        print(f'{margen}  {color("/crear", Color.AMARILLO)} <sala>                 Crear una sala y entrar')
+        print(f'{margen}  {color("/unirse", Color.AMARILLO)} <sala>                Cambiarte a una sala (/unirse General para volver)')
         imprimir_separador()
         print(
             f'{margen}  {color("●", Color.AMARILLO)} comando  '
@@ -213,6 +217,9 @@ class ClienteConsola:
         self.grupos = {}  # nombre -> {'miembros': [...], 'creador': .., 'avatar': ..}
         self.silenciados = set()  # nicknames cuyos mensajes se ocultan localmente
         self.ultimo_mensaje_propio = None  # {'id': ..} del último msg/priv/grupo_msg que mandaste
+        self.estado_mostrado = {}  # id_mensaje -> último estado agregado mostrado (evita repetir líneas)
+        self.sala_actual = 'General'  # sala pública en la que estás
+        self.salas_info = {}  # nombre_sala -> {'cantidad': .., 'miembros': [..]}
 
     def conectar(self, ip, puerto, nickname):
         self.ip = ip
@@ -294,6 +301,14 @@ class ClienteConsola:
         if emisor_temprano and emisor_temprano in self.silenciados and tipo in ('msg', 'priv', 'grupo_msg', 'typing', 'file'):
             return
 
+        # Acuse entregado + leído para mensajes ajenos (en consola se muestran al instante).
+        if tipo in ('msg', 'priv', 'grupo_msg') and emisor_temprano != self.nickname and mensaje.get('id'):
+            try:
+                confirmar_entrega(self.sock, mensaje.get('id'))
+                confirmar_lectura(self.sock, mensaje.get('id'))
+            except Exception:
+                pass
+
         if tipo == 'msg':
             emisor = mensaje.get('emisor')
             contenido = mensaje.get('contenido')
@@ -347,6 +362,16 @@ class ClienteConsola:
             nombre = mensaje.get('nombre')
             self.grupos.pop(nombre, None)
             linea = f'👥 {color(f"[GRUPO] Saliste de \"{nombre}\"", Color.VERDE)}'
+
+        elif tipo == 'salas':
+            # Actualización silenciosa del estado de salas (se ve con /salas).
+            self.salas_info = mensaje.get('salas', {})
+            self.sala_actual = mensaje.get('sala_actual', self.sala_actual)
+            return
+
+        elif tipo == 'sala_actual':
+            self.sala_actual = mensaje.get('nombre', 'General')
+            linea = f'🚪 {color(f"[SALA] Ahora estás en: {self.sala_actual}", Color.CIAN)}'
 
         elif tipo == 'grupo_msg':
             emisor = mensaje.get('emisor')
@@ -424,6 +449,19 @@ class ClienteConsola:
         elif tipo == 'msg_eliminado':
             linea = f'🗑️  {color("[Un mensaje fue eliminado]", Color.GRIS)}'
 
+        elif tipo == 'estado':
+            id_m = mensaje.get('id_mensaje')
+            agregado = mensaje.get('estado')
+            if self.estado_mostrado.get(id_m) == agregado:
+                return
+            self.estado_mostrado[id_m] = agregado
+            if agregado == 'read':
+                linea = f'{color("✓✓ Leído", Color.CIAN)} ({mensaje.get("leidos")}/{mensaje.get("total_destinatarios")})'
+            elif agregado == 'delivered':
+                linea = f'{color("✓✓ Entregado", Color.GRIS)} ({mensaje.get("entregados")}/{mensaje.get("total_destinatarios")})'
+            else:
+                return
+
         elif tipo == 'typing':
             emisor = mensaje.get('emisor')
             destinatario = mensaje.get('destinatario')
@@ -437,6 +475,17 @@ class ClienteConsola:
             with LOCK_IMPRESION:
                 print(f'\n{linea}')
                 self._mostrar_sign()
+
+    def _mostrar_salas(self):
+        if not self.salas_info:
+            print(color('No hay salas para mostrar todavía.', Color.GRIS))
+            return
+        with LOCK_IMPRESION:
+            print(color('Salas disponibles:', Color.CIAN))
+            for nombre, info in self.salas_info.items():
+                marca = color('  ← estás acá', Color.VERDE) if nombre == self.sala_actual else ''
+                print(f'  {color(nombre, Color.BOLD)} ({info.get("cantidad", 0)}){marca}')
+            print(color('Uso: /crear <sala>, /unirse <sala>, /unirse General para volver.', Color.GRIS))
 
     def _mostrar_server(self, texto):
         linea = f'ℹ️  {color("[SERVIDOR]", Color.VERDE)} {texto}'
@@ -576,6 +625,23 @@ class ClienteConsola:
             else:
                 eliminar_mensaje(self.sock, self.ultimo_mensaje_propio['id'])
                 self.ultimo_mensaje_propio = None
+
+        elif entrada == '/salas':
+            self._mostrar_salas()
+
+        elif entrada.startswith('/crear '):
+            nombre = entrada[len('/crear '):].strip()
+            if not nombre:
+                print(color('Uso: /crear <nombre-de-sala>', Color.ROJO))
+            else:
+                crear_sala(self.sock, nombre)
+
+        elif entrada.startswith('/unirse '):
+            nombre = entrada[len('/unirse '):].strip()
+            if not nombre:
+                print(color('Uso: /unirse <nombre-de-sala>', Color.ROJO))
+            else:
+                unirse_sala(self.sock, nombre)
 
         elif entrada == '/grupos':
             if self.grupos:

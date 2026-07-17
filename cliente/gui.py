@@ -18,7 +18,8 @@ from cliente.cliente_chat import (
     enviar_mensaje_privado, solicitar_lista, enviar_archivo,
     enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES, enviar_reaccion,
     crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
-    es_mencionado, editar_mensaje, eliminar_mensaje
+    es_mencionado, editar_mensaje, eliminar_mensaje,
+    confirmar_entrega, confirmar_lectura, crear_sala, unirse_sala
 )
 
 REACCIONES_RAPIDAS = ['👍', '❤️', '😂', '😮', '😢', '🙏']
@@ -569,6 +570,13 @@ class ChatFrame(ctk.CTkFrame):
         self.grupos = {}  # nombre -> {'miembros': [...], 'creador': .., 'avatar': ..}
         self.eventos_chat = []  # registro de cada burbuja mostrada, para poder re-dibujar el chat completo
         self.reacciones_por_mensaje = {}  # id_mensaje -> {emoji: set(nicknames)}
+        self.estados_mensajes = {}  # id_mensaje -> estado agregado ('delivered'/'read') del emisor
+        self.salas_info = {}  # nombre_sala -> {'cantidad': .., 'miembros': [..]}
+        self.sala_actual = 'General'  # sala pública en la que estás
+        self.pendientes_lectura = set()  # ids ajenos recibidos sin foco, se acusan 'read' al volver el foco
+        self.ventana_enfocada = True
+        self.root.bind('<FocusIn>', self._al_enfocar_ventana)
+        self.root.bind('<FocusOut>', self._al_desenfocar_ventana)
         self._marca_agua_presente = False
         self._historial_mostrado = False
         self._contador_links = 0  # para generar un tag de Tk único por link detectado
@@ -655,6 +663,29 @@ class ChatFrame(ctk.CTkFrame):
             corner_radius=8, height=34, command=self._ir_a_chat_general
         )
         self.boton_chat_general.pack(fill=tk.X, padx=12, pady=(15, 5))
+
+        # Barra de salas: cambia la sala pública activa (cada usuario está en una sola a la vez).
+        self.frame_salas = ctk.CTkFrame(self.frame_usuarios, fg_color='transparent')
+        self.frame_salas.pack(fill=tk.X, padx=12, pady=(6, 0))
+        self.label_salas = ctk.CTkLabel(
+            self.frame_salas, text='SALA', fg_color='transparent',
+            text_color=self.tema['texto_secundario'], font=('Segoe UI', 13, 'bold')
+        )
+        self.label_salas.pack(side=tk.LEFT)
+        self.boton_crear_sala = ctk.CTkButton(
+            self.frame_salas, text='＋', width=28, height=24,
+            fg_color='transparent', hover_color=self.tema['borde'],
+            text_color=self.tema['acento'], font=('Segoe UI', 14, 'bold'),
+            corner_radius=6, command=self._mostrar_crear_sala
+        )
+        self.boton_crear_sala.pack(side=tk.RIGHT)
+        self.combo_salas = ctk.CTkOptionMenu(
+            self.frame_salas, values=['General'], width=150, height=26,
+            fg_color=self.tema['entrada'], button_color=self.tema['acento'],
+            button_hover_color=self.tema['acento_hover'], text_color=self.tema['texto'],
+            font=('Segoe UI', 12), command=self._elegir_sala
+        )
+        self.combo_salas.pack(side=tk.RIGHT, padx=(0, 8))
 
         self.label_usuarios = ctk.CTkLabel(
             self.frame_usuarios, text='USUARIOS EN LÍNEA', fg_color='transparent',
@@ -861,6 +892,13 @@ class ChatFrame(ctk.CTkFrame):
         self.frame_usuarios.configure(bg=tema['panel'])
         self.boton_chat_general.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
         # Widgets CTk transparentes colgados de un tk.Frame necesitan bg_color a mano en cada cambio de tema (CTk no lo propaga).
+        self.frame_salas.configure(bg_color=tema['panel'])
+        self.label_salas.configure(bg_color=tema['panel'], text_color=tema['texto_secundario'])
+        self.boton_crear_sala.configure(bg_color=tema['panel'], hover_color=tema['borde'], text_color=tema['acento'])
+        self.combo_salas.configure(
+            bg_color=tema['panel'], fg_color=tema['entrada'], button_color=tema['acento'],
+            button_hover_color=tema['acento_hover'], text_color=tema['texto']
+        )
         self.label_usuarios.configure(bg_color=tema['panel'], text_color=tema['texto_secundario'])
         self.lista_usuarios.configure(fg_color=tema['panel'])
         self.frame_grupos_header.configure(bg_color=tema['panel'])
@@ -1417,6 +1455,9 @@ class ChatFrame(ctk.CTkFrame):
             if reacciones_texto:
                 self.area_chat.insert(tk.END, f'{reacciones_texto}\n', tag_hora)
 
+            if es_propio and tipo in ('msg', 'priv', 'grupo') and id_mensaje is not None:
+                self.area_chat.insert(tk.END, f'{self._simbolo_estado(id_mensaje)}\n', tag_hora)
+
             fin = self.area_chat.index(tk.END)
 
             if id_mensaje is not None:
@@ -1467,6 +1508,7 @@ class ChatFrame(ctk.CTkFrame):
             contenido = mensaje.get('contenido', '')
             self._agregar_burbuja(emisor, contenido, hora, 'msg', id_mensaje=mensaje.get('id'))
             if emisor != self.nickname:
+                self._acusar_recepcion(mensaje)
                 mencionado = es_mencionado(self.nickname, contenido)
                 reproducir_beep(mencion=mencionado)
 
@@ -1474,6 +1516,7 @@ class ChatFrame(ctk.CTkFrame):
             emisor = mensaje.get('emisor')
             self._agregar_burbuja(emisor, mensaje['contenido'], hora, 'priv', id_mensaje=mensaje.get('id'))
             if emisor != self.nickname:
+                self._acusar_recepcion(mensaje)
                 reproducir_beep()
 
         elif tipo == 'server':
@@ -1517,6 +1560,7 @@ class ChatFrame(ctk.CTkFrame):
                 emisor, contenido, hora, 'grupo', grupo=nombre_grupo, id_mensaje=mensaje.get('id')
             )
             if emisor != self.nickname:
+                self._acusar_recepcion(mensaje)
                 mencionado = es_mencionado(self.nickname, contenido)
                 reproducir_beep(mencion=mencionado)
 
@@ -1540,6 +1584,20 @@ class ChatFrame(ctk.CTkFrame):
                 self._mostrar_preview_imagen(ruta, emisor)
             self._agregar_burbuja(emisor, f'Archivo: {nombre}', hora, 'archivo', extra=extra, id_mensaje=mensaje.get('id'))
 
+        elif tipo == 'salas':
+            self._actualizar_salas(mensaje.get('salas', {}), mensaje.get('sala_actual', self.sala_actual))
+
+        elif tipo == 'sala_actual':
+            self._cambiar_de_sala(mensaje.get('nombre', 'General'))
+
+        elif tipo == 'estado':
+            id_m = mensaje.get('id_mensaje')
+            estado = mensaje.get('estado')
+            # Solo se redibuja si el estado agregado cambió (evita muchos redibujados en salas grandes).
+            if id_m is not None and estado in ('delivered', 'read') and self.estados_mensajes.get(id_m) != estado:
+                self.estados_mensajes[id_m] = estado
+                self._redibujar_chat()
+
         elif tipo == 'reaccion':
             self._registrar_reaccion(mensaje.get('id_mensaje'), mensaje.get('emisor'), mensaje.get('emoji'))
 
@@ -1562,6 +1620,77 @@ class ChatFrame(ctk.CTkFrame):
 
         elif tipo == 'error':
             self._agregar_burbuja('', f'Error: {mensaje.get("contenido")}', '', 'server')
+
+    def _al_enfocar_ventana(self, event=None):
+        # Al recuperar el foco se acusan como leídos los mensajes que llegaron mientras estaba en segundo plano.
+        self.ventana_enfocada = True
+        for id_m in list(self.pendientes_lectura):
+            try:
+                confirmar_lectura(self.sock, id_m)
+            except Exception:
+                pass
+        self.pendientes_lectura.clear()
+
+    def _al_desenfocar_ventana(self, event=None):
+        self.ventana_enfocada = False
+
+    def _acusar_recepcion(self, mensaje):
+        # Acusa entregado siempre; leído solo si la ventana tiene foco (si no, queda pendiente).
+        id_m = mensaje.get('id')
+        if not id_m or mensaje.get('emisor') == self.nickname:
+            return
+        try:
+            confirmar_entrega(self.sock, id_m)
+        except Exception:
+            return
+        if self.ventana_enfocada:
+            try:
+                confirmar_lectura(self.sock, id_m)
+            except Exception:
+                pass
+        else:
+            self.pendientes_lectura.add(id_m)
+
+    def _simbolo_estado(self, id_mensaje):
+        # ✓ enviado · ✓✓ entregado · ✓✓ Leído (solo en las burbujas propias).
+        estado = self.estados_mensajes.get(id_mensaje)
+        if estado == 'read':
+            return '✓✓ Leído'
+        if estado == 'delivered':
+            return '✓✓'
+        return '✓'
+
+    def _elegir_sala(self, nombre):
+        # Disparado al elegir una sala en el combo: pide el cambio al servidor si es distinta a la actual.
+        if nombre and nombre != self.sala_actual:
+            try:
+                unirse_sala(self.sock, nombre)
+            except Exception:
+                pass
+
+    def _mostrar_crear_sala(self):
+        dialogo = ctk.CTkInputDialog(text='Nombre de la nueva sala:', title='Crear sala')
+        nombre = dialogo.get_input()
+        if nombre and nombre.strip():
+            try:
+                crear_sala(self.sock, nombre.strip())
+            except Exception:
+                pass
+
+    def _actualizar_salas(self, salas_info, sala_actual):
+        self.salas_info = salas_info
+        self.sala_actual = sala_actual
+        nombres = list(salas_info.keys()) or ['General']
+        self.combo_salas.configure(values=nombres)
+        self.combo_salas.set(sala_actual)
+
+    def _cambiar_de_sala(self, nombre_sala):
+        # Al cambiar de sala se descarta el timeline público viejo; el server reenvía el historial de la nueva.
+        self.sala_actual = nombre_sala
+        self.combo_salas.set(nombre_sala)
+        self.eventos_chat = [ev for ev in self.eventos_chat if ev['tipo'] not in ('msg', 'historial')]
+        self._historial_mostrado = False
+        self._redibujar_chat()
 
     def _registrar_reaccion(self, id_mensaje, emisor, emoji):
         if id_mensaje is None or not emoji:

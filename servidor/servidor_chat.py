@@ -27,12 +27,18 @@ avatares = {}
 colores = {}
 # Diccionario global de grupos: nombre -> {'miembros': set(nicknames), 'creador': nickname, 'avatar': patron_key}
 grupos = {}
+# Salas públicas: cada usuario está en exactamente una. nombre_sala -> set(nicknames).
+salas = {'General': set()}
+# nickname -> sala pública actual del usuario.
+sala_por_usuario = {}
 # nickname -> fecha/hora de conexión (para /whois)
 horas_conexion = {}
 # nickname -> timestamps de sus últimos mensajes (para el límite anti-flood)
 mensajes_recientes = {}
 # id_mensaje -> datos del mensaje, para validar dueño/ventana de tiempo al editar o eliminar.
 mensajes_registro = {}
+# id_mensaje -> {emisor, destinatarios, entregados, leidos}, para el estado entregado/leído.
+estados_mensajes = {}
 lock = threading.Lock()
 # Fallback si un socket llega sin su lock propio (no debería pasar); el lock real es por socket, ver enviar().
 lock_envio = threading.Lock()
@@ -74,11 +80,11 @@ def registrar_mensaje_enviado():
         mensajes_totales += 1
 
 
-def registrar_mensaje_editable(id_mensaje, emisor, tipo, destinatario=None, grupo=None):
+def registrar_mensaje_editable(id_mensaje, emisor, tipo, destinatario=None, grupo=None, sala=None):
     with lock:
         mensajes_registro[id_mensaje] = {
             'emisor': emisor, 'ts': time.time(), 'tipo': tipo,
-            'destinatario': destinatario, 'grupo': grupo
+            'destinatario': destinatario, 'grupo': grupo, 'sala': sala
         }
 
 
@@ -91,6 +97,44 @@ def validar_edicion(nickname, id_mensaje):
         if time.time() - info['ts'] > VENTANA_EDICION_SEGUNDOS:
             return None, 'Ya pasaron más de 2 minutos: no se puede editar ni eliminar.'
         return dict(info), None
+
+
+def registrar_estado(id_mensaje, emisor, destinatarios):
+    # Registra a quién debe llegarle un mensaje para poder rastrear entregado/leído.
+    with lock:
+        estados_mensajes[id_mensaje] = {
+            'emisor': emisor, 'destinatarios': set(destinatarios),
+            'entregados': set(), 'leidos': set()
+        }
+
+
+def procesar_estado(nickname, id_mensaje, estado_nuevo):
+    # Acumula el acuse de un destinatario y avisa al emisor el estado agregado (ack/delivered/read).
+    with lock:
+        estado = estados_mensajes.get(id_mensaje)
+        if not estado or nickname not in estado['destinatarios']:
+            return
+        if estado_nuevo == 'delivered':
+            estado['entregados'].add(nickname)
+        elif estado_nuevo == 'read':
+            estado['entregados'].add(nickname)
+            estado['leidos'].add(nickname)
+        else:
+            return
+        total = len(estado['destinatarios'])
+        entregados = len(estado['entregados'])
+        leidos = len(estado['leidos'])
+        emisor = estado['emisor']
+    if total > 0 and leidos >= total:
+        agregado = 'read'
+    elif total > 0 and entregados >= total:
+        agregado = 'delivered'
+    else:
+        agregado = 'ack'
+    enviar_privado(emisor, {
+        'tipo': 'estado', 'id_mensaje': id_mensaje, 'estado': agregado,
+        'entregados': entregados, 'leidos': leidos, 'total_destinatarios': total
+    })
 
 
 def registrar_log_conexion(texto):
@@ -222,23 +266,80 @@ def _salir_de_grupo(nickname, nombre_grupo):
         sincronizar_grupo(nombre_grupo)
 
 
-def guardar_historial(linea):
-    # Lock dedicado para que dos hilos no escriban a la vez este archivo (antes no tenía y era un bug).
+def broadcast_sala(nombre_sala, mensaje, excluir=None):
+    # Envía solo a los usuarios que están en esa sala pública.
+    with lock:
+        socks = [(n, clientes[n]) for n in salas.get(nombre_sala, set()) if n in clientes]
+    for nick, sock in socks:
+        if excluir and nick == excluir:
+            continue
+        enviar(sock, mensaje)
+
+
+def enviar_lista_salas(destinatario=None):
+    # Manda el estado de salas (miembros/cantidad) y la sala actual de cada uno a uno o a todos.
+    with lock:
+        info = {nombre: {'cantidad': len(m), 'miembros': sorted(m)} for nombre, m in salas.items()}
+        por_usuario = dict(sala_por_usuario)
+        objetivos = [destinatario] if destinatario else list(clientes.keys())
+    for nick in objetivos:
+        enviar_privado(nick, {
+            'tipo': 'salas', 'salas': info, 'sala_actual': por_usuario.get(nick, 'General')
+        })
+
+
+def mover_usuario_a_sala(nickname, nueva_sala):
+    with lock:
+        if nickname not in clientes or nueva_sala not in salas:
+            return
+        sala_anterior = sala_por_usuario.get(nickname, 'General')
+        if sala_anterior == nueva_sala:
+            sock_actual = clientes.get(nickname)
+        else:
+            salas.setdefault(sala_anterior, set()).discard(nickname)
+            salas[nueva_sala].add(nickname)
+            sala_por_usuario[nickname] = nueva_sala
+            sock_actual = clientes.get(nickname)
+    if sala_anterior != nueva_sala:
+        broadcast_sala(sala_anterior, {'tipo': 'server', 'contenido': f'{nickname} salió de la sala.'})
+        broadcast_sala(nueva_sala, {'tipo': 'server', 'contenido': f'{nickname} entró a la sala.'}, excluir=nickname)
+    enviar_privado(nickname, {'tipo': 'sala_actual', 'nombre': nueva_sala})
+    if sock_actual:
+        enviar_historial(sock_actual, nueva_sala)
+    enviar_lista_salas()
+
+
+def guardar_historial(sala, linea):
+    # Se guarda como JSON por línea con su sala; el cliente igual recibe solo el texto al reenviarse.
     with lock_historial:
         with open(ARCHIVO_HISTORIAL, 'a', encoding='utf-8') as f:
-            f.write(linea + '\n')
+            f.write(json.dumps({'sala': sala, 'texto': linea}, ensure_ascii=False) + '\n')
 
 
 MAX_LINEAS_HISTORIAL_REENVIADO = 200
 
 
-def enviar_historial(socket_cliente):
-    # Un mensaje de red por línea: se limita a las últimas N para acotar la demora con historiales grandes.
-    if os.path.exists(ARCHIVO_HISTORIAL):
+def enviar_historial(socket_cliente, nombre_sala):
+    # Reenvía solo el historial de esa sala (líneas viejas en texto plano se toman como 'General').
+    if not os.path.exists(ARCHIVO_HISTORIAL):
+        return
+    # Se lee bajo el mismo lock que la escritura para no leer una línea a medio escribir.
+    with lock_historial:
         with open(ARCHIVO_HISTORIAL, 'r', encoding='utf-8') as f:
-            lineas = [linea.strip() for linea in f if linea.strip()]
-        for linea in lineas[-MAX_LINEAS_HISTORIAL_REENVIADO:]:
-            enviar(socket_cliente, {'tipo': 'historial', 'contenido': linea})
+            crudas = [linea.strip() for linea in f if linea.strip()]
+    lineas = []
+    for cruda in crudas:
+        try:
+            evento = json.loads(cruda)
+        except json.JSONDecodeError:
+            evento = None
+        if isinstance(evento, dict) and 'texto' in evento:
+            if evento.get('sala', 'General') == nombre_sala:
+                lineas.append(evento['texto'])
+        elif nombre_sala == 'General':
+            lineas.append(cruda)
+    for linea in lineas[-MAX_LINEAS_HISTORIAL_REENVIADO:]:
+        enviar(socket_cliente, {'tipo': 'historial', 'contenido': linea})
 
 
 def manejar_archivo(emisor, destinatario, nombre_archivo, datos_base64):
@@ -271,7 +372,10 @@ def manejar_archivo(emisor, destinatario, nombre_archivo, datos_base64):
 
     if destinatario == 'todos':
         # Sin excluir al emisor: ve su propio archivo con el mismo id que todos, sin eco local que duplique.
-        broadcast(mensaje)
+        with lock:
+            sala_actual = sala_por_usuario.get(emisor, 'General')
+        mensaje['sala'] = sala_actual
+        broadcast_sala(sala_actual, mensaje)
     else:
         enviar_privado(destinatario, mensaje)
         if destinatario != emisor:
@@ -328,6 +432,8 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                 if color:
                     colores[nickname] = color
                 horas_conexion[nickname] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                salas.setdefault('General', set()).add(nickname)
+                sala_por_usuario[nickname] = 'General'
 
         if not nick_valido:
             enviar(socket_cliente, {'tipo': 'server', 'contenido': 'NICK_INVALIDO'})
@@ -344,8 +450,9 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
             'tipo': 'server',
             'contenido': f'{nickname} se ha unido al chat.'
         }, excluir=nickname)
-        enviar_historial(socket_cliente)
+        enviar_historial(socket_cliente, 'General')
         enviar_lista_usuarios()
+        enviar_lista_salas()
 
         while True:
             mensaje = recibir(socket_cliente)
@@ -364,16 +471,21 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                 contenido = mensaje.get('contenido', '')
                 hora = obtener_hora()
                 id_msg = nuevo_id_mensaje()
-                registrar_mensaje_editable(id_msg, nickname, 'msg')
+                with lock:
+                    sala_actual = sala_por_usuario.get(nickname, 'General')
+                    destinatarios = set(salas.get(sala_actual, set())) - {nickname}
+                registrar_mensaje_editable(id_msg, nickname, 'msg', sala=sala_actual)
                 registrar_mensaje_enviado()
+                registrar_estado(id_msg, nickname, destinatarios)
                 texto_historial = f'[{hora}] {nickname}: {contenido}'
-                guardar_historial(texto_historial)
-                broadcast({
+                guardar_historial(sala_actual, texto_historial)
+                broadcast_sala(sala_actual, {
                     'tipo': 'msg',
                     'id': id_msg,
                     'emisor': nickname,
                     'contenido': contenido,
-                    'hora': hora
+                    'hora': hora,
+                    'sala': sala_actual
                 })
 
             elif tipo == 'priv':
@@ -389,6 +501,7 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                 id_msg = nuevo_id_mensaje()
                 registrar_mensaje_editable(id_msg, nickname, 'priv', destinatario=destinatario)
                 registrar_mensaje_enviado()
+                registrar_estado(id_msg, nickname, {destinatario} if destinatario != nickname else set())
                 mensaje_priv = {
                     'tipo': 'priv',
                     'id': id_msg,
@@ -425,7 +538,9 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                     'destinatario': destinatario
                 }
                 if destinatario == 'todos':
-                    broadcast(notificacion, excluir=nickname)
+                    with lock:
+                        sala_actual = sala_por_usuario.get(nickname, 'General')
+                    broadcast_sala(sala_actual, notificacion, excluir=nickname)
                 else:
                     enviar_privado(destinatario, notificacion)
 
@@ -504,6 +619,9 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                     id_msg = nuevo_id_mensaje()
                     registrar_mensaje_editable(id_msg, nickname, 'grupo_msg', grupo=nombre_grupo)
                     registrar_mensaje_enviado()
+                    with lock:
+                        miembros_grupo = set(grupos.get(nombre_grupo, {}).get('miembros', set())) - {nickname}
+                    registrar_estado(id_msg, nickname, miembros_grupo)
                     enviar_grupo(nombre_grupo, {
                         'tipo': 'grupo_msg',
                         'id': id_msg,
@@ -557,7 +675,7 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                 else:
                     evento = {'tipo': 'msg_editado', 'id_mensaje': id_mensaje, 'contenido': nuevo_contenido}
                     if info['tipo'] == 'msg':
-                        broadcast(evento)
+                        broadcast_sala(info.get('sala') or 'General', evento)
                     elif info['tipo'] == 'priv':
                         enviar_privado(info['destinatario'], evento)
                         if info['destinatario'] != nickname:
@@ -573,7 +691,7 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                 else:
                     evento = {'tipo': 'msg_eliminado', 'id_mensaje': id_mensaje}
                     if info['tipo'] == 'msg':
-                        broadcast(evento)
+                        broadcast_sala(info.get('sala') or 'General', evento)
                     elif info['tipo'] == 'priv':
                         enviar_privado(info['destinatario'], evento)
                         if info['destinatario'] != nickname:
@@ -582,6 +700,40 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                         enviar_grupo(info['grupo'], evento)
                     with lock:
                         mensajes_registro.pop(id_mensaje, None)
+                        estados_mensajes.pop(id_mensaje, None)
+
+            elif tipo == 'sala_listar':
+                enviar_lista_salas(nickname)
+
+            elif tipo == 'sala_crear':
+                nombre_sala = (mensaje.get('nombre') or '').strip()
+                with lock:
+                    if not nombre_sala:
+                        error = 'el nombre no puede estar vacío'
+                    elif nombre_sala in salas or nombre_sala in grupos or nombre_sala in clientes:
+                        error = 'ya existe una sala, grupo o usuario con ese nombre'
+                    else:
+                        error = None
+                        salas[nombre_sala] = set()
+                if error:
+                    enviar(socket_cliente, {'tipo': 'server', 'contenido': f'SALA_INVALIDA: {error}'})
+                else:
+                    mover_usuario_a_sala(nickname, nombre_sala)
+
+            elif tipo == 'sala_unirse':
+                nombre_sala = (mensaje.get('nombre') or '').strip()
+                with lock:
+                    existe = nombre_sala in salas
+                if existe:
+                    mover_usuario_a_sala(nickname, nombre_sala)
+                else:
+                    enviar(socket_cliente, {'tipo': 'server', 'contenido': f'SALA_INVALIDA: la sala "{nombre_sala}" no existe'})
+
+            elif tipo == 'sala_salir':
+                mover_usuario_a_sala(nickname, 'General')
+
+            elif tipo in ('delivered', 'read'):
+                procesar_estado(nickname, mensaje.get('id_mensaje'), tipo)
 
             elif tipo == 'exit':
                 break
@@ -597,6 +749,11 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                 colores.pop(nickname, None)
                 horas_conexion.pop(nickname, None)
                 mensajes_recientes.pop(nickname, None)
+                sala_del_usuario = sala_por_usuario.pop(nickname, None)
+                if sala_del_usuario:
+                    salas.get(sala_del_usuario, set()).discard(nickname)
+                    if sala_del_usuario != 'General' and not salas.get(sala_del_usuario):
+                        salas.pop(sala_del_usuario, None)
                 grupos_del_usuario = [n for n, info in grupos.items() if nickname in info['miembros']]
             for nombre_grupo in grupos_del_usuario:
                 _salir_de_grupo(nickname, nombre_grupo)
@@ -607,6 +764,7 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                 'contenido': f'{nickname} ha abandonado el chat.'
             })
             enviar_lista_usuarios()
+            enviar_lista_salas()
         socket_cliente.close()
 
 

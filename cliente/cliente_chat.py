@@ -5,6 +5,10 @@ import base64
 import os
 import re
 import time
+import threading
+
+# Serializa los envíos: la consola ahora manda acuses desde el hilo de escucha además del principal.
+_LOCK_ENVIO = threading.Lock()
 
 CARPETA_DESCARGAS = 'descargas'
 
@@ -36,8 +40,9 @@ def conectar(ip, puerto):
 def enviar(socket_cliente, mensaje):
     data = json.dumps(mensaje).encode('utf-8')
     longitud = len(data)
-    socket_cliente.sendall(longitud.to_bytes(4, byteorder='big'))
-    socket_cliente.sendall(data)
+    with _LOCK_ENVIO:
+        socket_cliente.sendall(longitud.to_bytes(4, byteorder='big'))
+        socket_cliente.sendall(data)
 
 
 def recibir(socket_cliente):
@@ -120,6 +125,33 @@ def editar_mensaje(socket_cliente, id_mensaje, contenido):
 
 def eliminar_mensaje(socket_cliente, id_mensaje):
     enviar(socket_cliente, {'tipo': 'msg_eliminar', 'id_mensaje': id_mensaje})
+
+
+def crear_sala(socket_cliente, nombre):
+    enviar(socket_cliente, {'tipo': 'sala_crear', 'nombre': nombre})
+
+
+def unirse_sala(socket_cliente, nombre):
+    enviar(socket_cliente, {'tipo': 'sala_unirse', 'nombre': nombre})
+
+
+def salir_sala(socket_cliente):
+    # Vuelve a la sala 'General'.
+    enviar(socket_cliente, {'tipo': 'sala_salir'})
+
+
+def listar_salas(socket_cliente):
+    enviar(socket_cliente, {'tipo': 'sala_listar'})
+
+
+def confirmar_entrega(socket_cliente, id_mensaje):
+    # Acuse "entregado" (llegó al cliente) que se manda al recibir un mensaje ajeno.
+    enviar(socket_cliente, {'tipo': 'delivered', 'id_mensaje': id_mensaje})
+
+
+def confirmar_lectura(socket_cliente, id_mensaje):
+    # Acuse "leído" (el usuario lo vio) que se manda al mostrar el mensaje.
+    enviar(socket_cliente, {'tipo': 'read', 'id_mensaje': id_mensaje})
 
 
 def enviar_archivo(socket_cliente, ruta, destinatario='todos'):
