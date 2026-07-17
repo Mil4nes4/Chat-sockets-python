@@ -1,9 +1,11 @@
 import math
 import os
 import queue
+import re
 import sys
 import threading
 import time
+import webbrowser
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, filedialog
 
@@ -16,16 +18,24 @@ from cliente.cliente_chat import (
     enviar_mensaje_privado, solicitar_lista, enviar_archivo,
     enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES, enviar_reaccion,
     crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
-    es_mencionado
+    es_mencionado, editar_mensaje, eliminar_mensaje
 )
 
 REACCIONES_RAPIDAS = ['👍', '❤️', '😂', '😮', '😢', '🙏']
+URL_REGEX = re.compile(r'(https?://[^\s]+)')
 
 try:
     from PIL import Image, ImageTk
     PIL_DISPONIBLE = True
 except ImportError:
     PIL_DISPONIBLE = False
+
+# Drag & drop opcional: si tkinterdnd2 no está instalado, la GUI funciona igual con el botón 📎.
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    DND_DISPONIBLE = True
+except ImportError:
+    DND_DISPONIBLE = False
 
 TEMA_OSCURO = {
     'nombre': 'oscuro',
@@ -83,9 +93,7 @@ TEMA_CLARO = {
     'grupo_fondo': '#e1f3e8'
 }
 
-# Ordenada por matiz (rueda de color: rojo -> naranja -> amarillo -> verde ->
-# celeste -> azul -> violeta -> rosa) para que el selector de color del login
-# se vea como un degradé prolijo en vez de una mezcla al azar.
+# Ordenada por matiz (rojo -> naranja -> ... -> violeta -> rosa) para que el selector se vea como un degradé.
 PALETA_USUARIOS = [
     '#ff6b6b', '#ff922b', '#ffa94d', '#ffd43b',
     '#a9e34b', '#69db7c', '#63e6be', '#3bc9db',
@@ -97,6 +105,18 @@ PALETA_USUARIOS = [
 def color_usuario(nickname):
     indice = sum(ord(c) for c in nickname) % len(PALETA_USUARIOS)
     return PALETA_USUARIOS[indice]
+
+# Pares (color, color_hover) para el selector de acento; el hover se elige a mano, no se calcula.
+PALETA_ACENTOS = [
+    ('#5865f2', '#4752c4'),  # azul (por defecto)
+    ('#eb459e', '#c73583'),  # rosa
+    ('#57f287', '#3bb46c'),  # verde
+    ('#fee75c', '#c9b23e'),  # amarillo
+    ('#ed4245', '#c93537'),  # rojo
+    ('#f0883e', '#c96f2f'),  # naranja
+    ('#9b59b6', '#7d4796'),  # violeta
+    ('#00c2c7', '#009a9e'),  # turquesa
+]
 
 AVATARES_DISPONIBLES = [
     'circulo', 'anillo', 'diamante', 'rayas', 'estrella', 'triangulo',
@@ -426,9 +446,7 @@ class LoginFrame(ctk.CTkFrame):
         self.label_color.pack(fill=tk.X, pady=(12, 6))
         self.labels_secundarios.append(self.label_color)
 
-        # Fila única con scroll horizontal -- a diferencia de la grilla de
-        # avatares, acá no queremos que los colores salten a una segunda
-        # fila por más que se agreguen más adelante.
+        # Fila única con scroll horizontal para que los colores no salten a una segunda fila.
         self.frame_colores = ctk.CTkScrollableFrame(
             self.frame_central, orientation='horizontal', fg_color='transparent',
             height=48, width=300,
@@ -496,11 +514,7 @@ class LoginFrame(ctk.CTkFrame):
             self.imagenes_selector[patron] = imagen
             boton.configure(image=imagen, fg_color=tema['entrada'], hover_color=tema['borde'],
                              border_color=tema['acento'])
-        # CTkScrollableFrame.configure() solo recalcula su color de fondo
-        # cuando el kwarg 'fg_color' está presente en la llamada (aunque el
-        # valor no cambie) -- un cascade genérico de bg_color desde el padre
-        # (que sí sirve para CTkFrame/CTkLabel normales) no le hace nada,
-        # por eso quedaba con el color del tema viejo al cambiar de modo.
+        # CTkScrollableFrame solo recalcula su fondo si se le pasa fg_color explícito (el cascade del padre no le llega).
         self.frame_colores.configure(
             fg_color='transparent',
             scrollbar_button_color=tema['borde'], scrollbar_button_hover_color=tema['acento']
@@ -557,6 +571,7 @@ class ChatFrame(ctk.CTkFrame):
         self.reacciones_por_mensaje = {}  # id_mensaje -> {emoji: set(nicknames)}
         self._marca_agua_presente = False
         self._historial_mostrado = False
+        self._contador_links = 0  # para generar un tag de Tk único por link detectado
 
         self._construir()
         self._procesar_cola()
@@ -590,6 +605,14 @@ class ChatFrame(ctk.CTkFrame):
         if self.tema['nombre'] == 'claro':
             self.switch_tema.select()
 
+        self.boton_acento = ctk.CTkButton(
+            self.frame_superior, text='🎨', command=self._mostrar_selector_acento,
+            fg_color=self.tema['entrada'], hover_color=self.tema['borde'],
+            text_color=self.tema['texto'], width=40, height=36,
+            corner_radius=12, font=('Segoe UI', 14)
+        )
+        self.boton_acento.pack(side=tk.RIGHT, padx=5, pady=6)
+
         self.boton_desconectar = ctk.CTkButton(
             self.frame_superior, text='Desconectar', command=self.on_desconectar,
             fg_color='#ed4245', hover_color='#c93537', text_color='white',
@@ -617,19 +640,10 @@ class ChatFrame(ctk.CTkFrame):
             corner_radius=8, font=('Segoe UI', 13)
         ).pack(side=tk.RIGHT, padx=5)
 
-        # Área central: chat + usuarios
-        # Nota: el pack() de este frame se hace al final de _construir(),
-        # después de empaquetar toda la barra inferior/estado/typing.
-        # Así esos elementos de tamaño fijo reservan su espacio primero y
-        # solo el área de chat se encoge si la ventana queda chica
-        # (si no, el pack de Tk reparte el espacio en orden de llamada y
-        # el frame con expand=True se queda con todo, empujando la barra
-        # de envío fuera de la ventana visible).
+        # Área central: chat + usuarios. Su pack() se hace al final para que la barra inferior reserve su espacio primero.
         self.frame_central = tk.Frame(self, bg=self.tema['fondo'])
 
-        # Panel de usuarios (se crea antes que el área de chat para que Tk
-        # no corrompa el primer carácter del título al dibujarlo después
-        # del widget Text con scrollbar)
+        # Panel de usuarios (se crea antes que el chat para que Tk no corrompa el primer carácter del título).
         self.frame_usuarios = tk.Frame(self.frame_central, bg=self.tema['panel'], width=340)
         self.frame_usuarios.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 10), pady=10)
         self.frame_usuarios.pack_propagate(False)
@@ -686,11 +700,29 @@ class ChatFrame(ctk.CTkFrame):
         )
         self.area_chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # El label de "escribiendo..." se crea aquí (para tener la
-        # referencia disponible) pero se empaqueta más abajo, después de
-        # toda la barra inferior, para que quede pegado justo encima de
-        # ella en la pila de widgets "bottom" (ver comentario junto al
-        # pack final de frame_central).
+        # Botón flotante "ir al último mensaje": arranca oculto y se posiciona con .place() sobre el textbox.
+        self.boton_ir_abajo = ctk.CTkButton(
+            self.frame_chat, text='⬇ Nuevos mensajes', width=160, height=30,
+            corner_radius=15, fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
+            text_color='white', font=('Segoe UI', 12, 'bold'),
+            command=self._ir_al_ultimo_mensaje
+        )
+
+        # Se envuelve el yscrollcommand del CTkTextbox para sincronizar el botón ante cualquier scroll, sin usar after().
+        _set_scrollbar_original = self.area_chat._y_scrollbar.set
+
+        def _on_scroll_area_chat(*args):
+            _set_scrollbar_original(*args)
+            self._actualizar_boton_ir_abajo()
+
+        self.area_chat._textbox.configure(yscrollcommand=_on_scroll_area_chat)
+
+        if DND_DISPONIBLE:
+            # tkinterdnd2 inyecta drop_target_register/dnd_bind en todo widget Tk si el root es TkinterDnD (ver main()).
+            self.frame_chat.drop_target_register(DND_FILES)
+            self.frame_chat.dnd_bind('<<Drop>>', self._archivos_soltados)
+
+        # El label de "escribiendo..." se crea aquí pero se empaqueta más abajo, para que quede sobre la barra inferior.
         self.label_typing = ctk.CTkLabel(
             self, text='', fg_color='transparent', text_color=self.tema['texto_secundario'],
             font=('Segoe UI', 13, 'italic'), anchor='w'
@@ -778,18 +810,10 @@ class ChatFrame(ctk.CTkFrame):
         )
         self.boton_enviar.pack(side=tk.LEFT, padx=5)
 
-        # El typing se empaqueta ahora, como último elemento del lado
-        # "bottom", para que quede justo encima de la barra inferior.
+        # El typing se empaqueta ahora, como último del lado "bottom", para que quede sobre la barra inferior.
         self.label_typing.pack(fill=tk.X, padx=15, side=tk.BOTTOM)
 
-        # Recién ahora se empaqueta el área central (chat + usuarios), al
-        # final de todo, para que la barra inferior y el resto del
-        # "chrome" fijo ya tengan su espacio reservado en la ventana. Si
-        # se empaqueta antes (como estaba originalmente), Tk le da su
-        # tamaño natural de una vez y los widgets empaquetados después
-        # pueden quedarse sin espacio y no mostrarse cuando la ventana es
-        # más chica que el tamaño "ideal" (ver bug de los botones
-        # inferiores invisibles).
+        # El área central se empaqueta al final para que la barra inferior ya tenga su espacio reservado.
         self.frame_central.pack(fill=tk.BOTH, expand=True)
 
         self._configurar_tags()
@@ -799,6 +823,28 @@ class ChatFrame(ctk.CTkFrame):
         if self.on_cambiar_tema:
             self.on_cambiar_tema()
 
+    def _mostrar_selector_acento(self):
+        ventana = ctk.CTkToplevel(self)
+        ventana.title('Color de acento')
+        ventana.resizable(False, False)
+        ventana.configure(fg_color=self.tema['panel'])
+        ventana.transient(self.winfo_toplevel())
+
+        for i, (color_hex, hover_hex) in enumerate(PALETA_ACENTOS):
+            fila, columna = divmod(i, 4)
+            ctk.CTkButton(
+                ventana, text='', width=36, height=36, corner_radius=18,
+                fg_color=color_hex, hover_color=color_hex, border_width=0,
+                command=lambda c=color_hex, h=hover_hex, v=ventana: self._elegir_acento(c, h, v)
+            ).grid(row=fila, column=columna, padx=6, pady=6)
+
+    def _elegir_acento(self, color_hex, hover_hex, ventana):
+        ventana.destroy()
+        # self.tema es el dict global del tema, así que mutar 'acento' acá queda vigente el resto de la sesión.
+        self.tema['acento'] = color_hex
+        self.tema['acento_hover'] = hover_hex
+        self._aplicar_tema(self.tema)
+
     def _aplicar_tema(self, tema):
         self.tema = tema
         self.configure(fg_color=tema['fondo'])
@@ -806,6 +852,7 @@ class ChatFrame(ctk.CTkFrame):
         self.label_titulo.configure(text_color=tema['texto'])
         self.boton_buscar.configure(fg_color=tema['entrada'], hover_color=tema['borde'], text_color=tema['texto'])
         self.switch_tema.configure(text_color=tema['texto_secundario'], progress_color=tema['acento'])
+        self.boton_acento.configure(fg_color=tema['entrada'], hover_color=tema['borde'], text_color=tema['texto'])
         self.linea_acento_superior.configure(bg=tema['acento'])
         self.linea_acento_inferior.configure(bg=tema['acento'])
         self.frame_busqueda.configure(bg=tema['fondo'])
@@ -813,13 +860,7 @@ class ChatFrame(ctk.CTkFrame):
         self.frame_central.configure(bg=tema['fondo'])
         self.frame_usuarios.configure(bg=tema['panel'])
         self.boton_chat_general.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
-        # label_usuarios y frame_grupos_header tienen fg_color='transparent', lo que
-        # internamente los pinta con su propio bg_color en vez de ser realmente
-        # invisibles. Como su padre (frame_usuarios) es un tk.Frame común y no un
-        # widget CTk, el mecanismo automático de CTk que propaga bg_color desde el
-        # padre solo engancha si se llama a master.config() -- acá se usa .configure()
-        # en todos lados, así que nunca se dispara y quedan con el color del tema
-        # viejo. Hay que fijarles el bg_color a mano en cada cambio de tema.
+        # Widgets CTk transparentes colgados de un tk.Frame necesitan bg_color a mano en cada cambio de tema (CTk no lo propaga).
         self.label_usuarios.configure(bg_color=tema['panel'], text_color=tema['texto_secundario'])
         self.lista_usuarios.configure(fg_color=tema['panel'])
         self.frame_grupos_header.configure(bg_color=tema['panel'])
@@ -828,6 +869,7 @@ class ChatFrame(ctk.CTkFrame):
         self.lista_grupos.configure(fg_color=tema['panel'])
         self.frame_chat.configure(bg=tema['fondo'])
         self.area_chat.configure(fg_color=tema['fondo'], text_color=tema['texto'], border_color=tema['borde'])
+        self.boton_ir_abajo.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'], text_color='white')
         self.label_typing.configure(text_color=tema['texto_secundario'])
         self.frame_estado.configure(bg=tema['panel'])
         self.label_estado.configure(text_color=tema['online'])
@@ -850,21 +892,14 @@ class ChatFrame(ctk.CTkFrame):
         self.cache_avatares.clear()
         self._actualizar_usuarios(self.usuarios_actuales)
         self._actualizar_grupos()
-        # Las burbujas ya insertadas en el chat tienen imágenes de avatar
-        # embebidas (image_create) que apuntan a los PhotoImage que se
-        # acaban de limpiar de cache_avatares -- sin este redibujado,
-        # esas referencias quedan colgando (se recolectan como basura) y
-        # las fotos de perfil ya mostradas en el chat desaparecen.
+        # Redibujar: las burbujas ya insertadas apuntan a avatares del cache recién limpiado y desaparecerían.
         self._redibujar_chat()
 
         ctk.set_appearance_mode('light' if tema['nombre'] == 'claro' else 'dark')
 
     def _configurar_tags(self):
         t = self.tema
-        # CTkTextbox.tag_config() prohíbe el kwarg 'font' (lo bloquea por
-        # incompatibilidad con su escalado de UI). Para poder seguir fijando
-        # fuente por tag como antes, se usa el tkinter.Text real que
-        # CTkTextbox envuelve internamente en self._textbox.
+        # CTkTextbox.tag_config() prohíbe 'font', así que se usa el tkinter.Text real interno (self._textbox).
         tags = self.area_chat._textbox
 
         # Texto genérico
@@ -1128,11 +1163,11 @@ class ChatFrame(ctk.CTkFrame):
             text_color='white', height=36, corner_radius=8, font=('Segoe UI', 13, 'bold')
         ).pack(fill=tk.X, padx=16, pady=(10, 16))
 
-    def _mostrar_selector_reaccion(self, event, id_mensaje):
+    def _mostrar_menu_mensaje(self, event, id_mensaje, es_propio, tipo, contenido):
         if not self.conectado:
             return
         ventana = ctk.CTkToplevel(self)
-        ventana.title('Reaccionar')
+        ventana.title('Mensaje')
         ventana.resizable(False, False)
         ventana.configure(fg_color=self.tema['panel'])
         ventana.geometry(f'+{event.x_root}+{event.y_root}')
@@ -1146,12 +1181,78 @@ class ChatFrame(ctk.CTkFrame):
                 command=lambda e=emoji, v=ventana: self._enviar_reaccion(id_mensaje, e, v)
             ).grid(row=0, column=i, padx=2, pady=2)
 
+        # Editar/eliminar solo para mensajes de texto propios (el servidor igual valida dueño y ventana de 2 min).
+        if es_propio and tipo in ('msg', 'priv', 'grupo'):
+            ctk.CTkButton(
+                ventana, text='✏️ Editar', width=100, height=28, corner_radius=6,
+                fg_color='transparent', hover_color=self.tema['borde'],
+                text_color=self.tema['texto'], font=('Segoe UI', 12),
+                command=lambda: self._mostrar_editar_mensaje(id_mensaje, contenido, ventana)
+            ).grid(row=1, column=0, columnspan=3, padx=2, pady=(6, 2), sticky='we')
+            ctk.CTkButton(
+                ventana, text='🗑️ Eliminar', width=100, height=28, corner_radius=6,
+                fg_color='transparent', hover_color=self.tema['borde'],
+                text_color='#ed4245', font=('Segoe UI', 12),
+                command=lambda: self._confirmar_eliminar_mensaje(id_mensaje, ventana)
+            ).grid(row=1, column=3, columnspan=3, padx=2, pady=(6, 2), sticky='we')
+
+    def _mostrar_editar_mensaje(self, id_mensaje, contenido_actual, ventana_menu):
+        ventana_menu.destroy()
+        ventana = ctk.CTkToplevel(self)
+        ventana.title('Editar mensaje')
+        ventana.resizable(False, False)
+        ventana.configure(fg_color=self.tema['panel'])
+        ventana.transient(self.winfo_toplevel())
+
+        entry = ctk.CTkEntry(
+            ventana, width=320, fg_color=self.tema['entrada'], text_color=self.tema['texto'],
+            border_color=self.tema['borde'], border_width=1, corner_radius=8, font=('Segoe UI', 14)
+        )
+        entry.insert(0, contenido_actual)
+        entry.pack(padx=16, pady=(16, 8))
+        entry.focus()
+        entry.icursor(tk.END)
+
+        def guardar():
+            nuevo_texto = entry.get().strip()
+            if nuevo_texto:
+                editar_mensaje(self.sock, id_mensaje, nuevo_texto)
+            ventana.destroy()
+
+        entry.bind('<Return>', lambda e: guardar())
+        ctk.CTkButton(
+            ventana, text='Guardar', command=guardar,
+            fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
+            text_color='white', height=32, corner_radius=8, font=('Segoe UI', 13, 'bold')
+        ).pack(fill=tk.X, padx=16, pady=(0, 16))
+
+    def _confirmar_eliminar_mensaje(self, id_mensaje, ventana_menu):
+        ventana_menu.destroy()
+        if messagebox.askyesno('Eliminar mensaje', '¿Eliminar este mensaje para todos?'):
+            eliminar_mensaje(self.sock, id_mensaje)
+
     def _enviar_reaccion(self, id_mensaje, emoji, ventana):
         ventana.destroy()
         try:
             enviar_reaccion(self.sock, id_mensaje, emoji)
         except Exception:
             pass
+
+    def _editar_mensaje_local(self, id_mensaje, nuevo_contenido):
+        for ev in self.eventos_chat:
+            if ev.get('id_mensaje') == id_mensaje:
+                ev['contenido'] = nuevo_contenido
+                ev['extra'] = '(editado)'
+                break
+        self._redibujar_chat()
+
+    def _eliminar_mensaje_local(self, id_mensaje):
+        for ev in self.eventos_chat:
+            if ev.get('id_mensaje') == id_mensaje:
+                ev['contenido'] = '🗑️ Mensaje eliminado'
+                ev['extra'] = ''
+                break
+        self._redibujar_chat()
 
     def _buscar(self):
         self._quitar_resaltado_busqueda()
@@ -1202,11 +1303,23 @@ class ChatFrame(ctk.CTkFrame):
     def _evento_visible(self, evento, vista):
         if evento['tipo'] == 'grupo':
             return vista == f'Grupo: {evento["grupo"]}'
-        # Mensajes públicos, privados, de archivo, server e historial se ven
-        # siempre en el feed general -- "Para: <usuario>" solo elige a quién
-        # se manda el próximo mensaje, no filtra la vista (a diferencia de
-        # los grupos, que sí tienen su propia pestaña separada).
+        # Todo lo no-grupo se ve siempre en el feed general; elegir un usuario en "Para:" no filtra la vista.
         return not vista.startswith('Grupo: ')
+
+    def _resaltar_links(self, texto, indice_inicio):
+        # indice_inicio es la posición previa a insertar 'texto'; los offsets se direccionan con aritmética de índices Tk ('+Nc').
+        for match in URL_REGEX.finditer(texto):
+            ini = f'{indice_inicio}+{match.start()}c'
+            fin = f'{indice_inicio}+{match.end()}c'
+            tag_link = f'link_{self._contador_links}'
+            self._contador_links += 1
+            url = match.group(1)
+            textbox = self.area_chat._textbox
+            textbox.tag_add(tag_link, ini, fin)
+            textbox.tag_config(tag_link, underline=True, foreground=self.tema['acento'])
+            textbox.tag_bind(tag_link, '<Button-1>', lambda e, u=url: webbrowser.open(u))
+            textbox.tag_bind(tag_link, '<Enter>', lambda e: textbox.config(cursor='hand2'))
+            textbox.tag_bind(tag_link, '<Leave>', lambda e: textbox.config(cursor=''))
 
     def _agregar_burbuja(self, emisor, contenido, hora, tipo='msg', alinear='izquierda', extra='',
                           id_mensaje=None, grupo=None):
@@ -1224,6 +1337,9 @@ class ChatFrame(ctk.CTkFrame):
             reacciones = self.reacciones_por_mensaje.get(id_mensaje)
             if reacciones:
                 reacciones_texto = '  '.join(f'{emoji} {len(nicks)}' for emoji, nicks in reacciones.items())
+
+        # Se mide antes de insertar: solo se sigue el scroll al final si el usuario no scrolleó hacia arriba.
+        pegado_abajo = self._esta_al_final()
 
         self.area_chat.configure(state=tk.NORMAL)
         self._limpiar_marca_agua()
@@ -1290,7 +1406,10 @@ class ChatFrame(ctk.CTkFrame):
                 self.area_chat.insert(tk.END, f'{prefijo}  ', tag_nombre)
             self.area_chat.insert(tk.END, f'{hora}\n', tag_hora)
             self.area_chat.insert(tk.END, '┃ ', tag_texto)
+            # 'end-1c' ancla donde empieza el contenido; con 'end' a secas los rangos de los links quedaban vacíos.
+            indice_contenido = self.area_chat.index(f'{tk.END}-1c')
             self.area_chat.insert(tk.END, f'{contenido}\n', tag_texto)
+            self._resaltar_links(contenido, indice_contenido)
 
             if extra:
                 self.area_chat.insert(tk.END, f'{extra}\n', tag_hora)
@@ -1305,19 +1424,23 @@ class ChatFrame(ctk.CTkFrame):
                 self.area_chat.tag_add(tag_mensaje, inicio, fin)
                 self.area_chat._textbox.tag_bind(
                     tag_mensaje, '<Button-3>',
-                    lambda e, i=id_mensaje: self._mostrar_selector_reaccion(e, i)
+                    lambda e, i=id_mensaje, ep=es_propio, tp=tipo, c=contenido: (
+                        self._mostrar_menu_mensaje(e, i, ep, tp, c)
+                    )
                 )
 
             if es_propio:
                 self.area_chat.tag_add('derecha', inicio, fin)
 
-        self.area_chat.see(tk.END)
+        if pegado_abajo:
+            self.area_chat.see(tk.END)
         self.area_chat.configure(state=tk.DISABLED)
 
     def _mostrar_preview_imagen(self, ruta, emisor):
         if not PIL_DISPONIBLE:
             return False
         try:
+            pegado_abajo = self._esta_al_final()
             img = Image.open(ruta)
             img.thumbnail((200, 200))
             photo = ImageTk.PhotoImage(img)
@@ -1325,12 +1448,11 @@ class ChatFrame(ctk.CTkFrame):
 
             self.area_chat.configure(state=tk.NORMAL)
             self.area_chat.insert(tk.END, f'[Imagen de {emisor}]\n', 'hora')
-            # CTkTextbox.image_create() está deshabilitado a propósito (por
-            # la misma razón que 'font' en tag_config); se usa el
-            # tkinter.Text real vía self._textbox, igual que en _configurar_tags.
+            # CTkTextbox.image_create() está deshabilitado; se usa el tkinter.Text real vía self._textbox.
             self.area_chat._textbox.image_create(tk.END, image=photo)
             self.area_chat.insert(tk.END, '\n\n')
-            self.area_chat.see(tk.END)
+            if pegado_abajo:
+                self.area_chat.see(tk.END)
             self.area_chat.configure(state=tk.DISABLED)
             return True
         except Exception:
@@ -1357,12 +1479,7 @@ class ChatFrame(ctk.CTkFrame):
         elif tipo == 'server':
             contenido = mensaje['contenido']
             if contenido.startswith('GRUPO_INVALIDO: '):
-                # La confirmación de "Crear grupo"/"Invitar" cierra el modal
-                # al instante (crear_grupo() es asíncrono, no hay forma de
-                # saber ahí mismo si el servidor lo va a rechazar). Sin este
-                # aviso, un error como nombre repetido o palabra reservada
-                # solo quedaba como una burbuja más, fácil de perderse una
-                # vez que el modal ya se cerró.
+                # El modal se cierra al instante (es asíncrono); se muestra un messagebox para no perder el error.
                 texto_error = contenido[len('GRUPO_INVALIDO: '):]
                 messagebox.showerror('Grupo', texto_error.capitalize())
             self._agregar_burbuja('', contenido, '', 'server')
@@ -1426,6 +1543,12 @@ class ChatFrame(ctk.CTkFrame):
         elif tipo == 'reaccion':
             self._registrar_reaccion(mensaje.get('id_mensaje'), mensaje.get('emisor'), mensaje.get('emoji'))
 
+        elif tipo == 'msg_editado':
+            self._editar_mensaje_local(mensaje.get('id_mensaje'), mensaje.get('contenido', ''))
+
+        elif tipo == 'msg_eliminado':
+            self._eliminar_mensaje_local(mensaje.get('id_mensaje'))
+
         elif tipo == 'typing':
             emisor = mensaje.get('emisor')
             destinatario = mensaje.get('destinatario')
@@ -1450,8 +1573,20 @@ class ChatFrame(ctk.CTkFrame):
         self.reacciones_por_mensaje[id_mensaje] = {e: u for e, u in reacciones.items() if u}
         self._redibujar_chat()
 
+    def _esta_al_final(self):
+        return self.area_chat.yview()[1] >= 0.999
+
+    def _actualizar_boton_ir_abajo(self):
+        if self._esta_al_final():
+            self.boton_ir_abajo.place_forget()
+        else:
+            self.boton_ir_abajo.place(relx=0.97, rely=0.95, anchor='se')
+
+    def _ir_al_ultimo_mensaje(self):
+        self.area_chat.see(tk.END)
+
     def _redibujar_chat(self):
-        pegado_abajo = self.area_chat.yview()[1] >= 0.999
+        pegado_abajo = self._esta_al_final()
         fraccion_scroll = self.area_chat.yview()[0]
 
         self.area_chat.configure(state=tk.NORMAL)
@@ -1475,10 +1610,7 @@ class ChatFrame(ctk.CTkFrame):
                     ev['emisor'], ev['contenido'], ev['hora'], ev['tipo'],
                     extra=ev['extra'], id_mensaje=ev['id_mensaje'], grupo=ev.get('grupo')
                 )
-            # Nota: los previews de imagen embebidos (_mostrar_preview_imagen)
-            # no se re-insertan en un redibujado -- se pierde el thumbnail
-            # inline, pero el texto "Archivo: nombre / Guardado en: ruta"
-            # se mantiene y el archivo sigue disponible en esa ruta.
+            # Los previews de imagen no se re-insertan al redibujar; el texto del archivo y su ruta sí se mantienen.
 
         if pegado_abajo:
             self.area_chat.see(tk.END)
@@ -1527,12 +1659,7 @@ class ChatFrame(ctk.CTkFrame):
         self._actualizar_titulo_vista()
 
     def _destinatario_protocolo(self):
-        # El combo muestra 'Todos' (mayúscula, para que se lea bien), pero
-        # el servidor espera literalmente 'todos' en minúscula para typing/
-        # archivos (los mensajes de texto no tienen este problema porque
-        # usan enviar_mensaje_publico(), que ni siquiera manda destinatario).
-        # Sin esta traducción, "Todos" nunca calza con el chequeo del
-        # servidor y el envío queda silenciosamente sin destinatario válido.
+        # El combo muestra 'Todos' pero el servidor espera 'todos' en minúscula para typing/archivos.
         valor = self.combo_destinatario.get()
         return 'todos' if valor == 'Todos' else valor
 
@@ -1559,12 +1686,7 @@ class ChatFrame(ctk.CTkFrame):
         for nombre, info in self.grupos.items():
             fila = ctk.CTkFrame(self.lista_grupos, fg_color='transparent')
             fila.pack(fill=tk.X, pady=2)
-            # Los botones ✕/＋ se empaquetan PRIMERO (side=RIGHT) para que
-            # reserven su espacio antes que el de nombre -- si se empaqueta
-            # el de nombre primero con fill=X+expand, un nombre de grupo
-            # largo lo hace crecer sin límite y empuja a ✕/＋ fuera del
-            # ancho visible de la barra lateral (quedan sin verse ni poder
-            # clickearse).
+            # Los botones ✕/＋ se empaquetan PRIMERO para reservar su espacio; si no, un nombre largo los empuja fuera de la vista.
             ctk.CTkButton(
                 fila, text='✕', width=26, height=26,
                 fg_color='transparent', hover_color=self.tema['borde'],
@@ -1577,11 +1699,7 @@ class ChatFrame(ctk.CTkFrame):
                 text_color=self.tema['texto_secundario'], font=('Segoe UI', 13, 'bold'),
                 corner_radius=6, command=lambda n=nombre: self._mostrar_invitar_grupo(n)
             ).pack(side=tk.RIGHT, padx=(4, 0))
-            # El ícono va en un CTkLabel aparte, con su propio espacio fijo,
-            # en vez de "image=" dentro del botón de nombre: si el botón
-            # queda con poco ancho disponible (fila angosta, texto largo),
-            # CTkButton prioriza el texto y el ícono deja de dibujarse. Con
-            # un widget dedicado, el ícono siempre tiene su lugar reservado.
+            # El ícono va en un CTkLabel aparte (no como image= del botón): con poco ancho, CTkButton priorizaría el texto y no lo dibujaría.
             ctk.CTkLabel(
                 fila, text='', image=self._obtener_avatar_grupo(nombre, 22),
                 fg_color='transparent', width=24
@@ -1615,6 +1733,14 @@ class ChatFrame(ctk.CTkFrame):
     def _enviar_archivo(self):
         if not self.conectado:
             return
+        ruta = filedialog.askopenfilename(title='Seleccionar archivo')
+        if not ruta:
+            return
+        self._enviar_archivo_ruta(ruta)
+
+    def _enviar_archivo_ruta(self, ruta):
+        if not self.conectado:
+            return
         destinatario_vista = self.combo_destinatario.get()
         if destinatario_vista.startswith('Grupo: '):
             messagebox.showinfo(
@@ -1622,23 +1748,24 @@ class ChatFrame(ctk.CTkFrame):
                 'Por ahora no se pueden enviar archivos a un grupo. Elegí "Todos" o un usuario.'
             )
             return
-        ruta = filedialog.askopenfilename(title='Seleccionar archivo')
-        if not ruta:
-            return
         if not os.path.exists(ruta):
             messagebox.showerror('Error', 'El archivo no existe.')
             return
 
         destinatario = self._destinatario_protocolo()
         try:
-            # No se agrega una burbuja local acá -- el servidor ahora
-            # siempre hace eco del archivo de vuelta al emisor (mismo
-            # patrón que los mensajes privados de texto), así que la
-            # burbuja llega sola por _manejar_mensaje con el id real
-            # (necesario para que las reacciones calcen) y sin duplicar.
+            # Sin burbuja local: el servidor hace eco del archivo al emisor con su id real, así llega sola y sin duplicar.
             enviar_archivo(self.sock, ruta, destinatario)
         except Exception as e:
             messagebox.showerror('Error', f'No se pudo enviar el archivo: {e}')
+
+    def _archivos_soltados(self, event):
+        if not self.conectado:
+            return
+        # event.data puede traer varias rutas (entre llaves si tienen espacios); splitlist() de Tcl las separa bien.
+        rutas = self.tk.splitlist(event.data)
+        for ruta in rutas:
+            self._enviar_archivo_ruta(ruta)
 
     def _procesar_cola(self):
         while not self.cola_mensajes.empty():
@@ -1764,10 +1891,23 @@ class ChatGUI:
         self.root.destroy()
 
 
+def _crear_root():
+    if not DND_DISPONIBLE:
+        return ctk.CTk()
+
+    # Mixin de tkinterdnd2 para combinar con CTk: agrega los métodos de drag&drop y carga el paquete Tcl 'tkdnd' con _require().
+    class RootConDnD(TkinterDnD.DnDWrapper, ctk.CTk):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.TkdndVersion = TkinterDnD._require(self)
+
+    return RootConDnD()
+
+
 def main():
     ctk.set_appearance_mode('dark')
     ctk.set_widget_scaling(1.0)
-    root = ctk.CTk()
+    root = _crear_root()
     app = ChatGUI(root)
     root.mainloop()
 

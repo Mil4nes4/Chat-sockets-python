@@ -5,6 +5,7 @@ __pycache__/
 # Generado en tiempo de ejecucion por el servidor
 servidor/historial_chat.txt
 servidor/archivos_recibidos/
+servidor/conexiones_log.txt
 
 # Generado en tiempo de ejecucion por los clientes
 descargas/

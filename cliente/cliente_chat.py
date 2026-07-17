@@ -1,8 +1,10 @@
 import socket
+import ssl
 import json
 import base64
 import os
 import re
+import time
 
 CARPETA_DESCARGAS = 'descargas'
 
@@ -15,9 +17,7 @@ EMOJIS_COMUNES = [
 
 
 def es_mencionado(nickname, contenido):
-    # Antes se usaba "f'@{nickname}' in contenido", que da falso positivo
-    # cuando un nick es prefijo de otro (ej. "Ana" matchea "@Anabel"). Se
-    # exige que el nick termine en un límite de palabra real.
+    # Límite de palabra para no dar falso positivo cuando un nick es prefijo de otro (Ana / @Anabel).
     if not nickname or not contenido:
         return False
     return re.search(r'@' + re.escape(nickname) + r'\b', contenido) is not None
@@ -26,7 +26,11 @@ def es_mencionado(nickname, contenido):
 def conectar(ip, puerto):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ip, puerto))
-    return sock
+    # Certificado autofirmado: TLS solo para cifrar el canal, no se valida hostname/CA.
+    contexto = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    contexto.check_hostname = False
+    contexto.verify_mode = ssl.CERT_NONE
+    return contexto.wrap_socket(sock, server_hostname=ip)
 
 
 def enviar(socket_cliente, mensaje):
@@ -95,6 +99,27 @@ def enviar_mensaje_grupo(socket_cliente, grupo, mensaje):
 
 def salir_grupo(socket_cliente, grupo):
     enviar(socket_cliente, {'tipo': 'grupo_salir', 'grupo': grupo})
+
+
+def enviar_ping(socket_cliente):
+    # Se manda el timestamp propio; el servidor lo devuelve en el pong y el RTT se calcula con el reloj local.
+    enviar(socket_cliente, {'tipo': 'ping', 'ts_cliente': time.time()})
+
+
+def solicitar_stats(socket_cliente):
+    enviar(socket_cliente, {'tipo': 'stats_solicitar'})
+
+
+def solicitar_whois(socket_cliente, usuario):
+    enviar(socket_cliente, {'tipo': 'whois', 'usuario': usuario})
+
+
+def editar_mensaje(socket_cliente, id_mensaje, contenido):
+    enviar(socket_cliente, {'tipo': 'msg_editar', 'id_mensaje': id_mensaje, 'contenido': contenido})
+
+
+def eliminar_mensaje(socket_cliente, id_mensaje):
+    enviar(socket_cliente, {'tipo': 'msg_eliminar', 'id_mensaje': id_mensaje})
 
 
 def enviar_archivo(socket_cliente, ruta, destinatario='todos'):

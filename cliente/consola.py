@@ -12,7 +12,8 @@ from cliente.cliente_chat import (
     enviar_mensaje_privado, solicitar_lista, enviar_archivo,
     enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES,
     crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
-    es_mencionado
+    es_mencionado, enviar_ping, solicitar_stats, solicitar_whois,
+    editar_mensaje, eliminar_mensaje
 )
 
 
@@ -28,8 +29,7 @@ def _habilitar_colores_windows():
 
 
 def _asegurar_utf8():
-    # Evita UnicodeEncodeError con los caracteres de caja/bloque si la
-    # salida no está en una consola UTF-8 (p. ej. redirigida a un archivo).
+    # Evita UnicodeEncodeError con los caracteres de caja/bloque si la salida no es UTF-8.
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
@@ -85,9 +85,7 @@ ANCHO_BANNER = 60
 
 
 def _margen_centrado():
-    # Centra los recuadros según el ancho real de la terminal. Si no se
-    # puede detectar (p. ej. salida redirigida a un archivo), usa 80
-    # columnas por defecto en vez de fallar.
+    # Centra los recuadros según el ancho real de la terminal (fallback 80 columnas si no se detecta).
     ancho_terminal = shutil.get_terminal_size(fallback=(80, 24)).columns
     return ' ' * max((ancho_terminal - ANCHO_BANNER) // 2, 0)
 
@@ -159,6 +157,13 @@ def imprimir_ayuda():
         print(f'{margen}  {color("/buscar", Color.AMARILLO)} <texto>              Buscar en el historial     ({color("/b", Color.AMARILLO)})')
         print(f'{margen}  {color("/emoji", Color.AMARILLO)} [número] [texto]      Enviar mensaje con emoji   ({color("/e", Color.AMARILLO)})')
         print(f'{margen}  {color("/limpiar", Color.AMARILLO)}                     Limpiar pantalla           ({color("/clear", Color.AMARILLO)})')
+        print(f'{margen}  {color("/historial", Color.AMARILLO)}                   Ver historial paginado     ({color("/hist", Color.AMARILLO)})')
+        print(f'{margen}  {color("/ping", Color.AMARILLO)}                        Medir latencia al servidor')
+        print(f'{margen}  {color("/stats", Color.AMARILLO)}                       Ver estadísticas del servidor')
+        print(f'{margen}  {color("/whois", Color.AMARILLO)} <usuario>             Ver info de un usuario')
+        print(f'{margen}  {color("/silenciar", Color.AMARILLO)} <usuario>          Ocultar/mostrar sus mensajes')
+        print(f'{margen}  {color("/editar", Color.AMARILLO)} <texto nuevo>        Editar tu último mensaje')
+        print(f'{margen}  {color("/eliminar", Color.AMARILLO)}                    Eliminar tu último mensaje')
         print(f'{margen}  {color("/reconectar", Color.AMARILLO)}                  Intentar reconectar        ({color("/r", Color.AMARILLO)})')
         print(f'{margen}  {color("/salir", Color.AMARILLO)}                       Desconectarse              ({color("/s", Color.AMARILLO)})')
         print(f'{margen}  {color("/ayuda", Color.AMARILLO)}                       Mostrar esta ayuda         ({color("/h", Color.AMARILLO)})')
@@ -206,6 +211,8 @@ class ClienteConsola:
         self.ip = '127.0.0.1'
         self.puerto = 5000
         self.grupos = {}  # nombre -> {'miembros': [...], 'creador': .., 'avatar': ..}
+        self.silenciados = set()  # nicknames cuyos mensajes se ocultan localmente
+        self.ultimo_mensaje_propio = None  # {'id': ..} del último msg/priv/grupo_msg que mandaste
 
     def conectar(self, ip, puerto, nickname):
         self.ip = ip
@@ -243,9 +250,7 @@ class ClienteConsola:
         if self.sock:
             cerrar(self.sock)
             self.sock = None
-        # El servidor te saca de todos tus grupos al desconectarte (limpieza
-        # automática) -- si no se limpia acá también, /reconectar deja
-        # self.grupos con membresías viejas que ya no son reales.
+        # El servidor te saca de tus grupos al desconectar; se limpia acá para que /reconectar no deje membresías viejas.
         self.grupos = {}
         with LOCK_IMPRESION:
             margen = _margen_centrado()
@@ -284,10 +289,16 @@ class ClienteConsola:
         hora = mensaje.get('hora', '')
         linea = ''
 
+        # Filtro de usuarios silenciados (ver /silenciar): se ignora antes de mostrar o guardar en historial.
+        emisor_temprano = mensaje.get('emisor')
+        if emisor_temprano and emisor_temprano in self.silenciados and tipo in ('msg', 'priv', 'grupo_msg', 'typing', 'file'):
+            return
+
         if tipo == 'msg':
             emisor = mensaje.get('emisor')
             contenido = mensaje.get('contenido')
             if emisor == self.nickname:
+                self.ultimo_mensaje_propio = {'id': mensaje.get('id')}
                 linea = color(f' {color("[Tú]", Color.BOLD + Color.BLANCO)} {hora}: {contenido} ', Color.FONDO_AZUL)
             else:
                 mencionado = es_mencionado(self.nickname, contenido)
@@ -303,6 +314,7 @@ class ClienteConsola:
             emisor = mensaje.get('emisor')
             contenido = mensaje.get('contenido')
             if emisor == self.nickname:
+                self.ultimo_mensaje_propio = {'id': mensaje.get('id')}
                 destinatario = mensaje.get('destinatario')
                 linea = f'🔒 {color("[PRIVADO para", Color.AMARILLO)} {color(destinatario, Color.BOLD)}{color("]", Color.AMARILLO)} {color(hora, Color.GRIS)}: {color(contenido, Color.AMARILLO)}'
             else:
@@ -341,6 +353,7 @@ class ClienteConsola:
             grupo = mensaje.get('grupo')
             contenido = mensaje.get('contenido')
             if emisor == self.nickname:
+                self.ultimo_mensaje_propio = {'id': mensaje.get('id')}
                 linea = f'👥 {color(f"[{grupo}] Tú", Color.VERDE)} {color(hora, Color.GRIS)}: {contenido}'
             else:
                 mencionado = es_mencionado(self.nickname, contenido)
@@ -373,6 +386,43 @@ class ClienteConsola:
                 ruta = guardar_archivo(emisor, nombre, mensaje.get('datos'))
                 linea = f'📎 {color(f"[{tipo_archivo} de", Color.MAGENTA)} {color(emisor, Color.BOLD)}{color("]", Color.MAGENTA)} {nombre}\n    Guardado en: {ruta}'
                 reproducir_beep()
+
+        elif tipo == 'pong':
+            ts_cliente = mensaje.get('ts_cliente')
+            if ts_cliente is not None:
+                rtt_ms = (time.time() - ts_cliente) * 1000
+                linea = f'🏓 {color("[PING]", Color.CIAN)} Respuesta del servidor en {rtt_ms:.1f} ms'
+            else:
+                linea = f'🏓 {color("[PING]", Color.CIAN)} pong'
+
+        elif tipo == 'stats':
+            uptime = mensaje.get('uptime_segundos', 0)
+            horas, resto = divmod(uptime, 3600)
+            minutos, segundos = divmod(resto, 60)
+            linea = (
+                f'📊 {color("[STATS]", Color.CIAN)} '
+                f'{mensaje.get("usuarios_conectados", 0)} usuarios conectados · '
+                f'{mensaje.get("mensajes_totales", 0)} mensajes enviados · '
+                f'servidor activo hace {horas}h {minutos}m {segundos}s'
+            )
+
+        elif tipo == 'whois_resultado':
+            usuario = mensaje.get('usuario')
+            if mensaje.get('existe'):
+                linea = (
+                    f'🔎 {color("[WHOIS]", Color.CIAN)} {color(usuario, Color.BOLD)} — '
+                    f'avatar: {mensaje.get("avatar") or "circulo"}, '
+                    f'color: {mensaje.get("color") or "(automático)"}, '
+                    f'conectado desde: {mensaje.get("conectado_desde") or "?"}'
+                )
+            else:
+                linea = f'🔎 {color("[WHOIS]", Color.CIAN)} "{usuario}" no está conectado.'
+
+        elif tipo == 'msg_editado':
+            linea = f'✏️  {color("[Un mensaje fue editado]", Color.GRIS)}'
+
+        elif tipo == 'msg_eliminado':
+            linea = f'🗑️  {color("[Un mensaje fue eliminado]", Color.GRIS)}'
 
         elif tipo == 'typing':
             emisor = mensaje.get('emisor')
@@ -434,19 +484,14 @@ class ClienteConsola:
             ruta = partes[1]
             destinatario = partes[2] if len(partes) == 3 else 'todos'
             if destinatario in self.grupos:
-                # El servidor no sabe rutear archivos a un grupo (manejar_archivo
-                # solo distingue 'todos' vs un nickname puntual) -- sin este
-                # chequeo el archivo se manda a un socket inexistente y se
-                # pierde en silencio, sin ningún error visible.
+                # El servidor no sabe rutear archivos a un grupo (solo 'todos' o un nickname), se perderían en silencio.
                 print(color('No se pueden enviar archivos a un grupo por ahora.', Color.ROJO))
                 return
             if not os.path.exists(ruta):
                 print(color('El archivo no existe.', Color.ROJO))
                 return
             try:
-                # No se imprime confirmación acá -- el servidor hace eco del
-                # archivo de vuelta (mismo patrón que /privado), y
-                # _manejar_mensaje ya lo muestra solo con el mismo formato.
+                # Sin confirmación acá: el servidor hace eco del archivo (como /privado) y _manejar_mensaje lo muestra.
                 enviar_archivo(self.sock, ruta, destinatario)
             except Exception as e:
                 print(color(f'Error al enviar archivo: {e}', Color.ROJO))
@@ -487,6 +532,50 @@ class ClienteConsola:
 
         elif entrada in ('/ayuda', '/h'):
             imprimir_ayuda()
+
+        elif entrada in ('/historial', '/hist'):
+            self._mostrar_historial_paginado()
+
+        elif entrada == '/ping':
+            enviar_ping(self.sock)
+
+        elif entrada == '/stats':
+            solicitar_stats(self.sock)
+
+        elif entrada.startswith('/whois '):
+            usuario = entrada[len('/whois '):].strip()
+            if not usuario:
+                print(color('Uso: /whois <usuario>', Color.ROJO))
+            else:
+                solicitar_whois(self.sock, usuario)
+
+        elif entrada.startswith('/silenciar '):
+            usuario = entrada[len('/silenciar '):].strip()
+            if not usuario:
+                print(color('Uso: /silenciar <usuario>', Color.ROJO))
+            elif usuario == self.nickname:
+                print(color('No podés silenciarte a vos mismo.', Color.ROJO))
+            elif usuario in self.silenciados:
+                self.silenciados.discard(usuario)
+                print(color(f'{usuario} ya no está silenciado.', Color.VERDE))
+            else:
+                self.silenciados.add(usuario)
+                print(color(f'{usuario} fue silenciado (no verás más sus mensajes).', Color.VERDE))
+
+        elif entrada.startswith('/editar '):
+            # Edita el último mensaje propio (el servidor igual valida dueño y ventana de 2 min).
+            nuevo_texto = entrada[len('/editar '):]
+            if not self.ultimo_mensaje_propio:
+                print(color('No tenés ningún mensaje propio reciente para editar.', Color.ROJO))
+            else:
+                editar_mensaje(self.sock, self.ultimo_mensaje_propio['id'], nuevo_texto)
+
+        elif entrada == '/eliminar':
+            if not self.ultimo_mensaje_propio:
+                print(color('No tenés ningún mensaje propio reciente para eliminar.', Color.ROJO))
+            else:
+                eliminar_mensaje(self.sock, self.ultimo_mensaje_propio['id'])
+                self.ultimo_mensaje_propio = None
 
         elif entrada == '/grupos':
             if self.grupos:
@@ -549,17 +638,43 @@ class ClienteConsola:
         coincidencias = [linea for linea in self.historial if texto.lower() in linea.lower()]
         with LOCK_IMPRESION:
             print(color(f'\n[BUSCAR] {len(coincidencias)} coincidencias para "{texto}":', Color.CIAN))
-            # Antes se resaltaba con .replace(texto, ...) + .replace(texto.capitalize(), ...),
-            # que solo cubre minúsculas y "Capitalizado" -- un resultado con
-            # otra combinación de mayúsculas (ej. TODO en mayúsculas) se
-            # encontraba (la búsqueda ya era case-insensitive) pero no se
-            # resaltaba. Con regex + IGNORECASE se resalta tal cual aparece.
+            # Regex con IGNORECASE para resaltar la coincidencia sin importar mayúsculas/minúsculas.
             patron = re.compile(re.escape(texto), re.IGNORECASE)
             for linea in coincidencias:
                 resaltada = patron.sub(lambda m: color(m.group(0), Color.AMARILLO), linea)
                 print(f'  {resaltada}')
             if not coincidencias:
                 print(color('  No se encontraron coincidencias.', Color.GRIS))
+
+    def _mostrar_historial_paginado(self):
+        if not self.historial:
+            print(color('No hay historial para mostrar todavía.', Color.GRIS))
+            return
+
+        lineas_por_pagina = max(shutil.get_terminal_size(fallback=(80, 24)).lines - 4, 5)
+        total = len(self.historial)
+        margen = _margen_centrado()
+
+        # Se toma LOCK_IMPRESION toda la sesión de paginado para que un mensaje entrante no rompa la pantalla.
+        with LOCK_IMPRESION:
+            indice = 0
+            while indice < total:
+                limpiar_pantalla_mensajes()
+                pagina = self.historial[indice:indice + lineas_por_pagina]
+                print(margen + color(
+                    f'──── Historial ({indice + 1}-{indice + len(pagina)} de {total}) ────', Color.CIAN
+                ))
+                for linea in pagina:
+                    print(linea)
+                indice += lineas_por_pagina
+                if indice < total:
+                    entrada = input(color('\n-- Enter para seguir, "q" para salir --  ', Color.GRIS)).strip().lower()
+                    if entrada == 'q':
+                        break
+                else:
+                    input(color('\n-- Fin del historial. Enter para volver al chat --  ', Color.GRIS))
+
+        self._limpiar()
 
     def _limpiar(self):
         limpiar_pantalla_mensajes()
