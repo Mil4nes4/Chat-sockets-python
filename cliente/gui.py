@@ -1525,6 +1525,10 @@ class ChatFrame(ctk.CTkFrame):
                 # El modal se cierra al instante (es asíncrono); se muestra un messagebox para no perder el error.
                 texto_error = contenido[len('GRUPO_INVALIDO: '):]
                 messagebox.showerror('Grupo', texto_error.capitalize())
+            elif contenido.startswith('SALA_INVALIDA: '):
+                # Mismo caso que los grupos: el diálogo de crear sala ya se cerró, se avisa con un messagebox.
+                texto_error = contenido[len('SALA_INVALIDA: '):]
+                messagebox.showerror('Sala', texto_error.capitalize())
             self._agregar_burbuja('', contenido, '', 'server')
 
         elif tipo == 'usuarios':
