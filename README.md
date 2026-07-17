@@ -1,24 +1,21 @@
 # Chat con Sockets en Python
 
-Proyecto de laboratorio de Sistemas Operativos: implementación de un chat cliente-servidor mediante sockets TCP en Python, con soporte para múltiples clientes simultáneos, mensajes públicos y privados, envío de archivos, historial de mensajes y dos interfaces de cliente: consola y gráfica (tkinter).
+Proyecto de laboratorio de Sistemas Operativos: un chat cliente-servidor sobre **sockets TCP** en Python, con múltiples clientes simultáneos, **tráfico cifrado con TLS**, mensajes públicos y privados, **salas** públicas, **grupos**, envío de archivos, historial, confirmaciones de **entregado/leído**, reacciones, menciones y dos interfaces de cliente: consola (ANSI) y gráfica (CustomTkinter).
 
 ---
 
 ## 1. Arquitectura
 
-El sistema sigue un modelo **cliente-servidor** basado en sockets TCP:
+Modelo **cliente-servidor** basado en sockets TCP, con todo el tráfico envuelto en **TLS**:
 
-- **Servidor (`servidor_chat.py`)**: centraliza las conexiones, administra los usuarios conectados, reenvía mensajes, gestiona mensajes privados, archivos y guarda el historial.
-- **Cliente de consola (`consola.py`)**: interfaz textual para conectarse al chat.
-- **Cliente gráfico (`gui.py`)**: interfaz visual con `tkinter`, estilo simple.
-- **Módulo compartido (`cliente_chat.py`)**: funciones de red usadas por ambos clientes.
+- **Servidor (`servidor_chat.py`)**: centraliza las conexiones, administra usuarios, salas y grupos, reenvía mensajes, gestiona privados y archivos, guarda el historial y rastrea el estado entregado/leído de cada mensaje. Crea **un hilo por cliente** conectado.
+- **Cliente de consola (`consola.py`)**: interfaz de terminal con colores ANSI.
+- **Cliente gráfico (`gui.py`)**: interfaz visual con **CustomTkinter** (burbujas, avatares, temas claro/oscuro).
+- **Módulo compartido (`cliente_chat.py`)**: lógica de red (framing, TLS, helpers de protocolo) usada por ambos clientes.
 
-Cada cliente mantiene dos hilos:
+Cada cliente mantiene dos hilos: uno para **escuchar** mensajes del servidor y otro para **enviar** la entrada del usuario. Los envíos se serializan con un lock para que ambos hilos puedan escribir en el mismo socket sin corromper el framing.
 
-1. Un hilo para **escuchar mensajes** del servidor.
-2. Un hilo para **leer/enviar** la entrada del usuario.
-
-El servidor crea un hilo por cada cliente conectado para atenderlo de forma concurrente.
+**Framing:** cada mensaje es un objeto JSON precedido por su longitud en 4 bytes (big-endian). El TLS cifra el canal completo.
 
 ---
 
@@ -28,12 +25,15 @@ El servidor crea un hilo por cada cliente conectado para atenderlo de forma conc
 chat_sockets/
 ├── servidor/
 │   ├── servidor_chat.py          # Servidor principal
+│   ├── certs/                    # Certificado y clave TLS (necesarios para arrancar)
+│   │   ├── servidor_cert.pem
+│   │   └── servidor_key.pem
 │   ├── historial_chat.txt        # Generado automáticamente por el servidor
 │   └── archivos_recibidos/       # Copia de archivos enviados
 ├── cliente/
-│   ├── cliente_chat.py           # Lógica de red compartida
+│   ├── cliente_chat.py           # Lógica de red compartida (TLS, framing, protocolo)
 │   ├── consola.py                # Cliente de terminal
-│   └── gui.py                    # Cliente gráfico con tkinter
+│   └── gui.py                    # Cliente gráfico con CustomTkinter
 └── README.md                     # Este archivo
 ```
 
@@ -41,15 +41,23 @@ chat_sockets/
 
 ## 3. Requisitos
 
-- Python 3.8 o superior.
-- Librerías estándar utilizadas: `socket`, `threading`, `tkinter`, `os`, `datetime`, `json`, `base64`.
-- El cliente de consola usa **códigos ANSI** para colores. Funciona en Windows 10/11 (cmd y PowerShell), Linux y macOS.
-- El cliente gráfico usa `tkinter`.
-- **Opcional**: instalar `Pillow` si se desea ver miniaturas de imágenes en la GUI:
+- **Python 3.8 o superior.**
+- Librerías estándar: `socket`, `ssl`, `threading`, `tkinter`, `os`, `datetime`, `json`, `base64`.
+- **CustomTkinter (requerido para el cliente gráfico):**
   ```bash
-  pip install Pillow
+  pip install customtkinter
   ```
-  Si no está instalado, la GUI igual indica que se recibió una imagen pero no muestra la miniatura.
+- **Opcionales:**
+  - `Pillow` — miniaturas de imágenes en la GUI. Sin él, la GUI avisa que llegó una imagen pero no la previsualiza.
+    ```bash
+    pip install Pillow
+    ```
+  - `tkinterdnd2` — arrastrar y soltar archivos en la GUI. Sin él, se envían igual con el botón 📎.
+    ```bash
+    pip install tkinterdnd2
+    ```
+- El cliente de consola usa **códigos ANSI** para colores (funciona en Windows 10/11 con cmd y PowerShell, Linux y macOS).
+- **Certificados TLS:** el servidor exige TLS y no arranca sin `servidor/certs/servidor_cert.pem` y `servidor/certs/servidor_key.pem`. Ya vienen incluidos en el proyecto (autofirmados). El cliente cifra pero no valida la CA (por ser autofirmado), así que funciona con cualquier IP.
 
 ---
 
@@ -68,119 +76,130 @@ Por defecto el servidor escucha en:
 - IP: `0.0.0.0` (acepta conexiones de cualquier dirección)
 - Puerto: `5000`
 
-Si deseas cambiar el puerto, edita la constante al inicio de `servidor_chat.py`:
+El puerto se controla con la variable de entorno **`CHAT_PUERTO`** (no editando el código):
 
-```python
-PUERTO = 5000
+```bash
+# Linux/macOS
+CHAT_PUERTO=443 python servidor/servidor_chat.py
+# Windows (PowerShell)
+$env:CHAT_PUERTO = "443"; python servidor/servidor_chat.py
 ```
 
-Al iniciarse mostrará la IP local del servidor y quedará esperando conexiones.
+Al iniciarse muestra la IP local y queda esperando conexiones cifradas.
 
 ### 4.2. Cliente de consola
 
-En otra terminal ejecuta:
+En otra terminal:
 
 ```bash
 python cliente/consola.py
 ```
 
-Te pedirá:
-
-1. La IP del servidor (usa `127.0.0.1` si estás en la misma máquina, o la IP de la máquina servidor).
-2. El puerto (presiona Enter para usar el `5000` por defecto).
-3. Tu nickname (debe ser único).
-
-Una vez dentro, escribe mensajes y presiona Enter para enviarlos a todos.
-
-La consola muestra mensajes con **colores** según su tipo: azul para los propios, amarillo para privados, verde para mensajes del servidor, etc. También emite un sonido al recibir mensajes o archivos de otros usuarios.
+Te pedirá la **IP del servidor** (`127.0.0.1` si es la misma máquina), el **puerto** (Enter usa `5000`) y tu **nickname** (único). Una vez dentro, escribe y presiona Enter para enviar a tu sala actual. Los mensajes se muestran con colores según su tipo y suena una notificación al recibir mensajes/archivos ajenos.
 
 ### 4.3. Cliente gráfico
-
-Ejecuta:
 
 ```bash
 python cliente/gui.py
 ```
 
-Aparecerá una pantalla de login donde ingresas:
-
-- IP del servidor.
-- Puerto.
-- Nickname.
-
-Luego presiona **Conectar**. El chat principal incluye:
-
-- Burbujas de mensajes con colores.
-- Lista de usuarios conectados con indicador en línea.
-- Doble clic en un usuario para enviarle un mensaje privado.
-- Indicador de "escribiendo...".
-- Envío de archivos con botón de clip (📎).
-- Preview de imágenes (si tienes Pillow instalado).
-- Búsqueda en el historial.
-- Notificación sonora al recibir mensajes.
+En el login ingresas IP, puerto, nickname, y podés elegir **avatar** y **color de perfil**. Luego **Conectar**.
 
 ---
 
-## 5. Comandos disponibles
+## 5. Funciones
 
-### Consola
+- **TLS**: todo el tráfico va cifrado.
+- **Mensajes públicos y privados**, con historial reenviado al conectarse.
+- **Salas públicas**: cada usuario está en **una sola sala a la vez** (por defecto `General`). El chat público y el historial se acotan a la sala; al entrar a otra sala recibís su historial. Sirven como canales temáticos.
+- **Grupos**: conversaciones con un subconjunto invitado de usuarios; podés estar en varios a la vez y se superponen al chat general.
+- **Entregado / leído**: cada mensaje propio muestra su estado — **✓ enviado → ✓✓ entregado → ✓✓ Leído**. En la GUI, "leído" se marca cuando la otra persona tiene la ventana en foco.
+- **Reacciones** con emojis (clic derecho sobre un mensaje, en la GUI).
+- **Menciones** `@usuario` (resaltado + sonido distinto).
+- **Editar y eliminar** el último mensaje propio (ventana de 2 minutos).
+- **Envío de archivos** (a todos, a un usuario o a un grupo), con **arrastrar y soltar** y preview de imágenes.
+- **Indicador de "escribiendo…"**, **búsqueda en el historial**, **links clicables**.
+- **Personalización (GUI)**: temas claro/oscuro, avatares y colores de perfil, selector de emojis y color de acento.
+- **Utilidades**: `/ping` (latencia), `/stats`, `/whois`, `/silenciar`.
+- **Anti-flood**: límite de mensajes por segundo para evitar spam.
 
-| Función | Comando | Alias | Descripción |
-|---|---|---|---|
-| Mensaje público | Escribir normalmente | - | Llega a todos los usuarios conectados. |
-| Mensaje privado | `/privado <usuario> <mensaje>` | `/p` | Envía un mensaje solo al usuario indicado. |
-| Lista de usuarios | `/usuarios` | `/u` | Muestra los nicknames conectados. |
-| Enviar archivo | `/archivo <ruta> [usuario]` | `/a` | Envía un archivo a todos o a un usuario. |
-| Buscar en historial | `/buscar <texto>` | `/b` | Busca coincidencias en los mensajes de la sesión. |
-| Limpiar pantalla | `/limpiar` | `/clear` | Limpia los mensajes anteriores de la consola. |
-| Reconectar | `/reconectar` | `/r` | Intenta reconectar al servidor. |
-| Salir | `/salir` | `/s` | Desconecta al cliente del servidor. |
-| Ayuda | `/ayuda` | `/h` | Muestra la lista de comandos. |
+---
+
+## 6. Comandos de consola
+
+| Función | Comando | Alias |
+|---|---|---|
+| Mensaje público (a tu sala) | Escribir normalmente | — |
+| Mensaje privado | `/privado <usuario> <mensaje>` | `/p` |
+| Lista de usuarios | `/usuarios` | `/u` |
+| Enviar archivo | `/archivo <ruta> [usuario]` | `/a` |
+| Buscar en historial | `/buscar <texto>` | `/b` |
+| Insertar emoji | `/emoji` o `/emoji <n> [texto]` | `/e` |
+| **Ver salas y en cuál estás** | `/salas` | — |
+| **Crear una sala y entrar** | `/crear <sala>` | — |
+| **Cambiarte de sala** | `/unirse <sala>` (usa `General` para volver) | — |
+| Crear grupo | `/grupo crear <nombre> <u1,u2,...>` | — |
+| Invitar a grupo | `/grupo invitar <nombre> <u1,u2,...>` | — |
+| Salir de grupo | `/grupo salir <nombre>` | — |
+| Mensaje a grupo | `/grupo <nombre> <mensaje>` | — |
+| Ver tus grupos | `/grupos` | — |
+| Editar último mensaje | `/editar <texto>` | — |
+| Eliminar último mensaje | `/eliminar` | — |
+| Latencia (RTT) | `/ping` | — |
+| Estadísticas del servidor | `/stats` | — |
+| Info de un usuario | `/whois <usuario>` | — |
+| Silenciar/mostrar a alguien | `/silenciar <usuario>` | — |
+| Ver historial paginado | `/historial` | `/hist` |
+| Limpiar pantalla | `/limpiar` | `/clear` |
+| Reconectar | `/reconectar` | `/r` |
+| Salir | `/salir` | `/s` |
+| Ayuda | `/ayuda` | `/h` |
 
 ### Interfaz gráfica
 
-- Selecciona el destinatario en el menú desplegable (`Todos` o un usuario específico).
-- Presiona **Enviar** o la tecla `Enter` para enviar mensajes.
-- Presiona **📎 Adjuntar archivo** para enviar archivos.
-- Haz doble clic en un usuario de la lista para seleccionarlo como destinatario privado.
-- Presiona **Buscar** para buscar en el historial.
+- Elegí el destinatario en el desplegable (`Todos`, un usuario o un grupo).
+- Cambiá de **sala** con el selector "SALA" de la barra lateral; el botón **＋** crea una sala nueva.
+- **Enviar** o `Enter` para mandar; **📎** o arrastrar un archivo para enviarlo.
+- **Clic derecho** sobre un mensaje: reaccionar, o editar/eliminar los propios.
+- Clic en un usuario de la lista para mencionarlo con `@`.
 
-Atajos de teclado en la GUI:
-
-- `Enter`: enviar mensaje.
-- `Escape`: desconectar / salir.
-- `Ctrl + L`: limpiar el área de chat.
+Atajos: `Enter` enviar · `Escape` desconectar/salir · `Ctrl + L` limpiar el chat.
 
 ---
 
-## 6. Protocolo de mensajes
+## 7. Protocolo de mensajes
 
-El servidor y los clientes se comunican mediante mensajes con prefijos:
+Los mensajes son objetos **JSON** con un campo `tipo`, enviados con framing de longitud (4 bytes) sobre TLS. Tipos principales:
 
-| Prefijo | Uso |
+| Tipo (cliente → servidor) | Uso |
 |---|---|
-| `NICK:<nombre>` | Registro del nickname al conectarse. |
-| `MSG:<mensaje>` | Mensaje público. |
-| `PRIV:<usuario>:<mensaje>` | Mensaje privado. |
-| `LIST` | Solicitud de lista de usuarios. |
-| `FILE:<destinatario>:<nombre>:<bytes>` | Envío de archivo. |
-| `TYPING:<destinatario>` | Indicador de que el usuario está escribiendo. |
-| `EXIT` | Desconexión ordenada. |
+| `nick` | Registro del nickname (con avatar y color) al conectar. |
+| `msg` / `priv` | Mensaje público (a la sala) / privado. |
+| `list` | Solicitud de lista de usuarios. |
+| `file` | Envío de archivo. |
+| `typing` | Indicador de "escribiendo…". |
+| `reaccion` | Reacción con emoji a un mensaje. |
+| `grupo_crear` / `grupo_invitar` / `grupo_msg` / `grupo_salir` | Gestión de grupos. |
+| `sala_crear` / `sala_unirse` / `sala_salir` / `sala_listar` | Gestión de salas. |
+| `msg_editar` / `msg_eliminar` | Editar o eliminar un mensaje propio. |
+| `delivered` / `read` | Acuse de entregado / leído. |
+| `ping` / `stats_solicitar` / `whois` | Utilidades. |
+| `exit` | Desconexión ordenada. |
 
-El servidor responde con:
-
-| Prefijo | Uso |
+| Tipo (servidor → cliente) | Uso |
 |---|---|
-| `SERVER:<mensaje>` | Mensajes del sistema (bienvenida, errores, notificaciones). |
-| `LIST:<u1,u2,u3>` | Lista de usuarios conectados. |
-| `PRIV:<emisor>:<mensaje>` | Mensaje privado recibido. |
-| `FILE:<emisor>:<nombre>:<bytes>` | Archivo recibido. |
-| `TYPING:<emisor>:<destinatario>` | Notificación de que un usuario está escribiendo. |
-| `HIST:<linea>` | Línea del historial enviada al cliente que se conecta. |
+| `server` | Mensajes del sistema (bienvenida, errores, avisos). |
+| `usuarios` | Lista de conectados (con avatares y colores). |
+| `msg` / `priv` / `file` | Mensaje o archivo recibido. |
+| `historial` | Línea del historial (de la sala) al conectarse o cambiar de sala. |
+| `salas` / `sala_actual` | Estado de salas y sala activa del usuario. |
+| `reaccion` / `msg_editado` / `msg_eliminado` | Cambios sobre mensajes existentes. |
+| `estado` | Estado agregado entregado/leído de un mensaje propio. |
+| `pong` / `stats` / `whois_resultado` | Respuestas de utilidades. |
 
 ---
 
-## 7. Pruebas en red real (diferentes computadoras)
+## 8. Pruebas en red real (diferentes computadoras)
 
 Para probar el chat entre computadoras distintas:
 
@@ -192,41 +211,40 @@ Para probar el chat entre computadoras distintas:
 
 3. En el cliente, usa la **IP local del servidor** si ambas computadoras están en la misma red WiFi/Ethernet (por ejemplo, `192.168.1.10`).
 
-4. Si las computadoras están en redes diferentes (por ejemplo, cada uno en su casa), hay varias formas de lograrlo. Las dos que se usaron para probar este proyecto:
+4. Si las computadoras están en redes diferentes, hay varias formas. Las dos que se usaron para probar este proyecto:
 
    **Opción A — Túnel con ngrok** (no requiere que quien se conecta instale nada):
    ```bash
    $env:NGROK_TOKEN = "tu_token_aqui"
    .\scripts\setup_ngrok.ps1
    ```
-   Esto levanta un túnel TCP hacia el puerto `5000` local y muestra una dirección pública (ej. `0.tcp.sa.ngrok.io:27660`) que cambia cada vez que se reinicia el túnel — hay que pasarle la dirección actualizada a quien se conecte.
+   Levanta un túnel TCP hacia el puerto local y muestra una dirección pública (ej. `0.tcp.sa.ngrok.io:27660`) que cambia cada vez que se reinicia el túnel.
 
-   **Opción B — Servidor en una VM de la nube (Google Cloud, tier gratuito)**: se despliega el mismo `servidor_chat.py` en una instancia `e2-micro` con IP pública fija, corriendo dentro de una sesión de `tmux` para que quede persistente. Ventaja sobre ngrok: la IP no cambia entre reinicios del servidor.
+   **Opción B — Servidor en una VM de la nube (Google Cloud, tier gratuito)**: se despliega el mismo `servidor_chat.py` en una instancia `e2-micro` con IP pública fija, corriendo dentro de una sesión de `tmux` para que quede persistente. Ventaja sobre ngrok: la IP no cambia entre reinicios.
 
-   También es válido el método clásico de **redirección de puertos (port forwarding)** en el router hacia el puerto `5000`, o una VPN de malla como Tailscale/Hamachi (aunque esta última requiere que ambos extremos instalen el cliente de la VPN).
+   También es válido el **port forwarding** en el router, o una VPN de malla como Tailscale/Hamachi.
 
 5. Verifica que el firewall del servidor (y el de red, en el caso de la nube) permita conexiones entrantes por el puerto usado.
 
-6. **Nota sobre redes restrictivas (universitarias/corporativas):** algunas redes bloquean puertos de salida no estándar. Si la conexión falla solo en ese tipo de redes (pero funciona en redes domésticas normales), el plan B es correr el servidor en el puerto `443` en vez del `5000` en la VM de la nube — la mayoría de firewalls permiten salida por ese puerto al ser el de HTTPS. Requiere dar permiso a Python para usar puertos privilegiados: `sudo setcap 'cap_net_bind_service=+ep' $(which python3)`.
+6. **Redes restrictivas (universitarias/corporativas):** algunas bloquean puertos de salida no estándar. Si la conexión falla solo en ese tipo de redes, el plan B es correr el servidor en el puerto `443` (`CHAT_PUERTO=443`) en la VM de la nube — la mayoría de firewalls permiten salida por ese puerto al ser el de HTTPS. Requiere dar permiso a Python para usar puertos privilegiados: `sudo setcap 'cap_net_bind_service=+ep' $(which python3)`.
 
 ---
 
-## 8. Notas importantes
+## 9. Notas importantes
 
-- Los nicknames deben ser únicos. Si un usuario intenta usar uno repetido, el servidor le pedirá que elija otro.
-- Los archivos recibidos por los clientes se guardan automáticamente en la carpeta `descargas/` (relativa al directorio desde donde se ejecute el cliente).
-- El servidor guarda una copia de los archivos enviados en `chat_sockets/servidor/archivos_recibidos/`.
-- El historial de mensajes públicos se guarda en `chat_sockets/servidor/historial_chat.txt`.
-- Los mensajes privados y archivos privados **no** se guardan en el historial público.
-- El servidor sigue funcionando aunque los clientes se desconecten; solo se cierra con `Ctrl + C`.
-- Si la consola no muestra colores en Windows, asegúrate de usar **cmd** o **PowerShell** moderno (Windows 10 o superior).
+- Los nicknames deben ser únicos; el servidor rechaza los repetidos.
+- El servidor **exige TLS**: un cliente sin cifrado no conecta. Los certificados van incluidos en `servidor/certs/`.
+- Al conectarte entrás a la sala `General`. El chat público solo llega a quienes están en tu **misma sala**.
+- Los archivos recibidos se guardan en la carpeta `descargas/` (relativa al directorio del cliente); el servidor guarda copia en `servidor/archivos_recibidos/`.
+- El historial de mensajes públicos se guarda en `servidor/historial_chat.txt` (etiquetado por sala). Los privados y archivos privados **no** se guardan en el historial público.
+- El servidor sigue funcionando aunque los clientes se desconecten; se cierra con `Ctrl + C`.
+- Si la consola no muestra colores en Windows, usa **cmd** o **PowerShell** moderno (Windows 10 o superior).
 
 ---
 
-## 9. Ejemplo de flujo de uso
+## 10. Ejemplo de flujo de uso
 
 1. Máquina A ejecuta el servidor.
 2. Máquina B ejecuta `gui.py` y se conecta a la IP de A.
 3. Máquina C ejecuta `consola.py` y se conecta a la IP de A.
-4. Los tres usuarios pueden chatear, enviarse mensajes privados y compartir archivos.
-
+4. Los tres chatean en la sala `General`; pueden crear salas, mandarse privados, formar grupos y compartir archivos, viendo el estado entregado/leído de sus mensajes.
