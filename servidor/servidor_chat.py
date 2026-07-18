@@ -39,6 +39,8 @@ mensajes_recientes = {}
 mensajes_registro = {}
 # id_mensaje -> {emisor, destinatarios, entregados, leidos}, para el estado entregado/leído.
 estados_mensajes = {}
+# Huella de la clave Fernet de la sesión: todos los clientes deben usar la misma (el server no conoce la clave).
+huella_sesion = None
 lock = threading.Lock()
 # Fallback si un socket llega sin su lock propio (no debería pasar); el lock real es por socket, ver enviar().
 lock_envio = threading.Lock()
@@ -309,37 +311,52 @@ def mover_usuario_a_sala(nickname, nueva_sala):
     enviar_lista_salas()
 
 
-def guardar_historial(sala, linea):
-    # Se guarda como JSON por línea con su sala; el cliente igual recibe solo el texto al reenviarse.
+def guardar_historial(evento):
+    # Guarda el evento de mensaje completo (JSON por línea); el contenido queda cifrado, el server no lo lee.
     with lock_historial:
         with open(ARCHIVO_HISTORIAL, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({'sala': sala, 'texto': linea}, ensure_ascii=False) + '\n')
+            f.write(json.dumps(evento, ensure_ascii=False) + '\n')
 
 
 MAX_LINEAS_HISTORIAL_REENVIADO = 200
 
 
 def enviar_historial(socket_cliente, nombre_sala):
-    # Reenvía solo el historial de esa sala (líneas viejas en texto plano se toman como 'General').
+    # Reenvía el historial de esa sala como 'historial_msg' (evento completo, el cliente lo descifra).
     if not os.path.exists(ARCHIVO_HISTORIAL):
         return
     # Se lee bajo el mismo lock que la escritura para no leer una línea a medio escribir.
     with lock_historial:
         with open(ARCHIVO_HISTORIAL, 'r', encoding='utf-8') as f:
             crudas = [linea.strip() for linea in f if linea.strip()]
-    lineas = []
+    eventos = []
     for cruda in crudas:
         try:
             evento = json.loads(cruda)
         except json.JSONDecodeError:
             evento = None
-        if isinstance(evento, dict) and 'texto' in evento:
+        if isinstance(evento, dict) and 'emisor' in evento:
             if evento.get('sala', 'General') == nombre_sala:
-                lineas.append(evento['texto'])
+                eventos.append(('msg', evento))
+        elif isinstance(evento, dict) and 'texto' in evento:
+            # Formato viejo de salas (texto plano): compat hacia atrás.
+            if evento.get('sala', 'General') == nombre_sala:
+                eventos.append(('texto', evento['texto']))
         elif nombre_sala == 'General':
-            lineas.append(cruda)
-    for linea in lineas[-MAX_LINEAS_HISTORIAL_REENVIADO:]:
-        enviar(socket_cliente, {'tipo': 'historial', 'contenido': linea})
+            eventos.append(('texto', cruda))
+    for tipo_ev, dato in eventos[-MAX_LINEAS_HISTORIAL_REENVIADO:]:
+        if tipo_ev == 'msg':
+            historial = dict(dato)
+            historial['tipo'] = 'historial_msg'
+            enviar(socket_cliente, historial)
+        else:
+            enviar(socket_cliente, {'tipo': 'historial', 'contenido': dato})
+
+
+def _contenido_cifrado_valido(mensaje):
+    # El server no descifra; solo valida que el contenido venga como token cifrado no vacío.
+    contenido = mensaje.get('contenido')
+    return isinstance(contenido, str) and bool(contenido) and mensaje.get('cifrado') is True
 
 
 def manejar_archivo(emisor, destinatario, nombre_archivo, datos_base64):
@@ -402,6 +419,7 @@ def activar_keepalive(socket_cliente):
 
 
 def manejar_cliente(socket_cliente, direccion, contexto_tls):
+    global huella_sesion
     nickname = None
     try:
         # El wrap TLS se hace acá (no en main()) para que un handshake fallido corte solo a este hilo.
@@ -422,11 +440,18 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
         nickname = mensaje.get('contenido', '').strip()
         avatar = mensaje.get('avatar', 'circulo')
         color = mensaje.get('color')
+        huella = str(mensaje.get('huella_clave', '')).strip()
 
         # Solo se decide el resultado bajo lock; el enviar() de rechazo va afuera para no bloquear con un sendall().
         with lock:
-            nick_valido = bool(nickname) and nickname not in clientes
-            if nick_valido:
+            if not nickname or nickname in clientes:
+                error = 'NICK_INVALIDO'
+            elif not huella:
+                error = 'CLAVE_REQUERIDA'
+            elif huella_sesion is not None and huella_sesion != huella:
+                error = 'CLAVE_INCOMPATIBLE'
+            else:
+                error = None
                 clientes[nickname] = socket_cliente
                 avatares[nickname] = avatar
                 if color:
@@ -434,9 +459,11 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                 horas_conexion[nickname] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 salas.setdefault('General', set()).add(nickname)
                 sala_por_usuario[nickname] = 'General'
+                if huella_sesion is None:
+                    huella_sesion = huella
 
-        if not nick_valido:
-            enviar(socket_cliente, {'tipo': 'server', 'contenido': 'NICK_INVALIDO'})
+        if error:
+            enviar(socket_cliente, {'tipo': 'server', 'contenido': error})
             return
 
         print(f'[Conectado] {nickname} desde {direccion}')
@@ -468,7 +495,10 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                         'contenido': 'Estás enviando mensajes muy rápido. Esperá unos segundos.'
                     })
                     continue
-                contenido = mensaje.get('contenido', '')
+                if not _contenido_cifrado_valido(mensaje):
+                    enviar(socket_cliente, {'tipo': 'server', 'contenido': 'MENSAJE_NO_CIFRADO'})
+                    continue
+                contenido = mensaje['contenido']
                 hora = obtener_hora()
                 id_msg = nuevo_id_mensaje()
                 with lock:
@@ -477,16 +507,12 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                 registrar_mensaje_editable(id_msg, nickname, 'msg', sala=sala_actual)
                 registrar_mensaje_enviado()
                 registrar_estado(id_msg, nickname, destinatarios)
-                texto_historial = f'[{hora}] {nickname}: {contenido}'
-                guardar_historial(sala_actual, texto_historial)
-                broadcast_sala(sala_actual, {
-                    'tipo': 'msg',
-                    'id': id_msg,
-                    'emisor': nickname,
-                    'contenido': contenido,
-                    'hora': hora,
-                    'sala': sala_actual
-                })
+                salida = {
+                    'tipo': 'msg', 'id': id_msg, 'emisor': nickname,
+                    'contenido': contenido, 'cifrado': True, 'hora': hora, 'sala': sala_actual
+                }
+                guardar_historial(salida)
+                broadcast_sala(sala_actual, salida)
 
             elif tipo == 'priv':
                 if excede_limite_envio(nickname):
@@ -495,8 +521,11 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                         'contenido': 'Estás enviando mensajes muy rápido. Esperá unos segundos.'
                     })
                     continue
+                if not _contenido_cifrado_valido(mensaje):
+                    enviar(socket_cliente, {'tipo': 'server', 'contenido': 'MENSAJE_NO_CIFRADO'})
+                    continue
                 destinatario = mensaje.get('destinatario')
-                contenido = mensaje.get('contenido', '')
+                contenido = mensaje['contenido']
                 hora = obtener_hora()
                 id_msg = nuevo_id_mensaje()
                 registrar_mensaje_editable(id_msg, nickname, 'priv', destinatario=destinatario)
@@ -508,6 +537,7 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                     'emisor': nickname,
                     'destinatario': destinatario,
                     'contenido': contenido,
+                    'cifrado': True,
                     'hora': hora
                 }
                 enviar_privado(destinatario, mensaje_priv)
@@ -609,8 +639,11 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                         'contenido': 'Estás enviando mensajes muy rápido. Esperá unos segundos.'
                     })
                     continue
+                if not _contenido_cifrado_valido(mensaje):
+                    enviar(socket_cliente, {'tipo': 'server', 'contenido': 'MENSAJE_NO_CIFRADO'})
+                    continue
                 nombre_grupo = mensaje.get('grupo')
-                contenido = mensaje.get('contenido', '')
+                contenido = mensaje['contenido']
 
                 with lock:
                     es_miembro = nickname in grupos.get(nombre_grupo, {}).get('miembros', set())
@@ -628,6 +661,7 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                         'grupo': nombre_grupo,
                         'emisor': nickname,
                         'contenido': contenido,
+                        'cifrado': True,
                         'hora': obtener_hora()
                     })
 
@@ -668,12 +702,15 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
 
             elif tipo == 'msg_editar':
                 id_mensaje = mensaje.get('id_mensaje')
-                nuevo_contenido = mensaje.get('contenido', '')
+                if not _contenido_cifrado_valido(mensaje):
+                    enviar(socket_cliente, {'tipo': 'server', 'contenido': 'MENSAJE_NO_CIFRADO'})
+                    continue
+                nuevo_contenido = mensaje['contenido']
                 info, error = validar_edicion(nickname, id_mensaje)
                 if error:
                     enviar(socket_cliente, {'tipo': 'server', 'contenido': error})
                 else:
-                    evento = {'tipo': 'msg_editado', 'id_mensaje': id_mensaje, 'contenido': nuevo_contenido}
+                    evento = {'tipo': 'msg_editado', 'id_mensaje': id_mensaje, 'contenido': nuevo_contenido, 'cifrado': True}
                     if info['tipo'] == 'msg':
                         broadcast_sala(info.get('sala') or 'General', evento)
                     elif info['tipo'] == 'priv':
@@ -754,6 +791,9 @@ def manejar_cliente(socket_cliente, direccion, contexto_tls):
                     salas.get(sala_del_usuario, set()).discard(nickname)
                     if sala_del_usuario != 'General' and not salas.get(sala_del_usuario):
                         salas.pop(sala_del_usuario, None)
+                if not clientes:
+                    # Sin nadie conectado, se libera la huella de sesión para aceptar una clave nueva.
+                    huella_sesion = None
                 grupos_del_usuario = [n for n, info in grupos.items() if nickname in info['miembros']]
             for nombre_grupo in grupos_del_usuario:
                 _salir_de_grupo(nickname, nombre_grupo)

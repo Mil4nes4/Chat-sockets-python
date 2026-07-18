@@ -1,6 +1,6 @@
 # Chat con Sockets en Python
 
-Proyecto de laboratorio de Sistemas Operativos: un chat cliente-servidor sobre **sockets TCP** en Python, con múltiples clientes simultáneos, **tráfico cifrado con TLS**, mensajes públicos y privados, **salas** públicas, **grupos**, envío de archivos, historial, confirmaciones de **entregado/leído**, reacciones, menciones y dos interfaces de cliente: consola (ANSI) y gráfica (CustomTkinter).
+Proyecto de laboratorio de Sistemas Operativos: un chat cliente-servidor sobre **sockets TCP** en Python, con múltiples clientes simultáneos, **doble cifrado** (TLS en el canal + Fernet extremo a extremo del contenido), mensajes públicos y privados, **salas** públicas, **grupos**, envío de archivos, historial, confirmaciones de **entregado/leído**, reacciones, menciones y dos interfaces de cliente: consola (ANSI) y gráfica (CustomTkinter).
 
 ---
 
@@ -15,7 +15,9 @@ Modelo **cliente-servidor** basado en sockets TCP, con todo el tráfico envuelto
 
 Cada cliente mantiene dos hilos: uno para **escuchar** mensajes del servidor y otro para **enviar** la entrada del usuario. Los envíos se serializan con un lock para que ambos hilos puedan escribir en el mismo socket sin corromper el framing.
 
-**Framing:** cada mensaje es un objeto JSON precedido por su longitud en 4 bytes (big-endian). El TLS cifra el canal completo.
+**Framing:** cada mensaje es un objeto JSON precedido por su longitud en 4 bytes (big-endian).
+
+**Doble cifrado:** el **TLS** cifra todo el canal (metadatos, nicknames, archivos, nombres de sala). Además, el **contenido** de los mensajes de texto se cifra con **Fernet** (clave simétrica compartida entre clientes) *antes* de salir del cliente — el servidor reenvía el token cifrado y **nunca ve el texto plano** (E2E del contenido). Ver la sección "Cifrado de mensajes".
 
 ---
 
@@ -31,9 +33,11 @@ chat_sockets/
 │   ├── historial_chat.txt        # Generado automáticamente por el servidor
 │   └── archivos_recibidos/       # Copia de archivos enviados
 ├── cliente/
-│   ├── cliente_chat.py           # Lógica de red compartida (TLS, framing, protocolo)
+│   ├── cliente_chat.py           # Lógica de red compartida (TLS, Fernet, framing, protocolo)
+│   ├── clave_chat.key            # Clave Fernet compartida (todos los clientes usan la misma)
 │   ├── consola.py                # Cliente de terminal
 │   └── gui.py                    # Cliente gráfico con CustomTkinter
+├── requirements.txt              # Dependencias de los clientes
 └── README.md                     # Este archivo
 ```
 
@@ -43,10 +47,17 @@ chat_sockets/
 
 - **Python 3.8 o superior.**
 - Librerías estándar: `socket`, `ssl`, `threading`, `tkinter`, `os`, `datetime`, `json`, `base64`.
+- **`cryptography` (requerido en los CLIENTES para el cifrado Fernet):**
+  ```bash
+  pip install cryptography
+  ```
+  Sin esta librería el cliente no puede cifrar y el servidor lo rechaza. **El servidor NO la
+  necesita** (nunca descifra, solo reenvía el contenido cifrado).
 - **CustomTkinter (requerido para el cliente gráfico):**
   ```bash
   pip install customtkinter
   ```
+- Atajo para instalar todo lo de los clientes: `pip install -r requirements.txt`.
 - **Opcionales:**
   - `Pillow` — miniaturas de imágenes en la GUI. Sin él, la GUI avisa que llegó una imagen pero no la previsualiza.
     ```bash
@@ -125,7 +136,20 @@ En el login ingresas IP, puerto, nickname, y podés elegir **avatar** y **color 
 
 ---
 
-## 6. Comandos de consola
+## 6. Cifrado de mensajes (Fernet)
+
+Además del TLS que protege el canal, el **contenido** de los mensajes públicos, privados y grupales se cifra con **Fernet** (clave simétrica) *en el cliente*, antes de enviarse. El servidor solo recibe y reenvía el texto cifrado: **nunca ve el contenido en claro** (cifrado extremo a extremo). Los mensajes se descifran en el cliente que los recibe.
+
+- La clave vive en `cliente/clave_chat.key`. **Todos los clientes deben usar exactamente la misma clave** para poder leerse entre sí.
+- Para conectar clientes desde distintas computadoras, copiá el mismo archivo `cliente/clave_chat.key` a cada una (viene incluido en el repo/ZIP).
+- También puede definirse la clave con la variable de entorno **`CHAT_FERNET_KEY`** (tiene prioridad sobre el archivo).
+- El servidor **exige** que los mensajes vengan cifrados: un cliente sin `cryptography` o sin la clave es rechazado (`CLAVE_REQUERIDA`), y uno con una clave distinta a la del resto también (`CLAVE_INCOMPATIBLE`, detectado por una huella pública de la clave, sin que el servidor conozca la clave).
+- El servidor **no** necesita la librería `cryptography` ni la clave.
+- Los **archivos** viajan codificados en Base64 protegidos por TLS, pero **no** se cifran con Fernet.
+
+---
+
+## 7. Comandos de consola
 
 | Función | Comando | Alias |
 |---|---|---|
@@ -167,14 +191,14 @@ Atajos: `Enter` enviar · `Escape` desconectar/salir · `Ctrl + L` limpiar el ch
 
 ---
 
-## 7. Protocolo de mensajes
+## 8. Protocolo de mensajes
 
 Los mensajes son objetos **JSON** con un campo `tipo`, enviados con framing de longitud (4 bytes) sobre TLS. Tipos principales:
 
 | Tipo (cliente → servidor) | Uso |
 |---|---|
-| `nick` | Registro del nickname (con avatar y color) al conectar. |
-| `msg` / `priv` | Mensaje público (a la sala) / privado. |
+| `nick` | Registro del nickname (con avatar, color y `huella_clave`) al conectar. |
+| `msg` / `priv` | Mensaje público (a la sala) / privado. El contenido va cifrado (`cifrado: true`). |
 | `list` | Solicitud de lista de usuarios. |
 | `file` | Envío de archivo. |
 | `typing` | Indicador de "escribiendo…". |
@@ -191,7 +215,7 @@ Los mensajes son objetos **JSON** con un campo `tipo`, enviados con framing de l
 | `server` | Mensajes del sistema (bienvenida, errores, avisos). |
 | `usuarios` | Lista de conectados (con avatares y colores). |
 | `msg` / `priv` / `file` | Mensaje o archivo recibido. |
-| `historial` | Línea del historial (de la sala) al conectarse o cambiar de sala. |
+| `historial` / `historial_msg` | Historial de la sala al conectarse o cambiar de sala (`historial_msg` lleva el contenido cifrado, se descifra en el cliente). |
 | `salas` / `sala_actual` | Estado de salas y sala activa del usuario. |
 | `reaccion` / `msg_editado` / `msg_eliminado` | Cambios sobre mensajes existentes. |
 | `estado` | Estado agregado entregado/leído de un mensaje propio. |
@@ -199,7 +223,7 @@ Los mensajes son objetos **JSON** con un campo `tipo`, enviados con framing de l
 
 ---
 
-## 8. Pruebas en red real (diferentes computadoras)
+## 9. Pruebas en red real (diferentes computadoras)
 
 Para probar el chat entre computadoras distintas:
 
@@ -230,10 +254,11 @@ Para probar el chat entre computadoras distintas:
 
 ---
 
-## 9. Notas importantes
+## 10. Notas importantes
 
 - Los nicknames deben ser únicos; el servidor rechaza los repetidos.
-- El servidor **exige TLS**: un cliente sin cifrado no conecta. Los certificados van incluidos en `servidor/certs/`.
+- El servidor **exige TLS y cifrado Fernet**: un cliente sin TLS, sin `cryptography` o con una clave distinta no conecta. Los certificados van en `servidor/certs/` y la clave en `cliente/clave_chat.key` (todos los clientes deben usar la misma).
+- El historial guarda el contenido **cifrado**; el servidor nunca ve el texto plano. Cambió el formato interno del historial, así que conviene vaciar `servidor/historial_chat.txt` al actualizar un servidor viejo.
 - Al conectarte entrás a la sala `General`. El chat público solo llega a quienes están en tu **misma sala**.
 - Los archivos recibidos se guardan en la carpeta `descargas/` (relativa al directorio del cliente); el servidor guarda copia en `servidor/archivos_recibidos/`.
 - El historial de mensajes públicos se guarda en `servidor/historial_chat.txt` (etiquetado por sala). Los privados y archivos privados **no** se guardan en el historial público.
@@ -242,7 +267,7 @@ Para probar el chat entre computadoras distintas:
 
 ---
 
-## 10. Ejemplo de flujo de uso
+## 11. Ejemplo de flujo de uso
 
 1. Máquina A ejecuta el servidor.
 2. Máquina B ejecuta `gui.py` y se conecta a la IP de A.

@@ -19,7 +19,8 @@ from cliente.cliente_chat import (
     enviar_typing, guardar_archivo, cerrar, EMOJIS_COMUNES, enviar_reaccion,
     crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
     es_mencionado, editar_mensaje, eliminar_mensaje,
-    confirmar_entrega, confirmar_lectura, crear_sala, unirse_sala
+    confirmar_entrega, confirmar_lectura, crear_sala, unirse_sala,
+    interpretar_contenido
 )
 
 REACCIONES_RAPIDAS = ['👍', '❤️', '😂', '😮', '😢', '🙏']
@@ -1505,7 +1506,7 @@ class ChatFrame(ctk.CTkFrame):
 
         if tipo == 'msg':
             emisor = mensaje.get('emisor')
-            contenido = mensaje.get('contenido', '')
+            contenido = self._texto(mensaje)
             self._agregar_burbuja(emisor, contenido, hora, 'msg', id_mensaje=mensaje.get('id'))
             if emisor != self.nickname:
                 self._acusar_recepcion(mensaje)
@@ -1514,7 +1515,7 @@ class ChatFrame(ctk.CTkFrame):
 
         elif tipo == 'priv':
             emisor = mensaje.get('emisor')
-            self._agregar_burbuja(emisor, mensaje['contenido'], hora, 'priv', id_mensaje=mensaje.get('id'))
+            self._agregar_burbuja(emisor, self._texto(mensaje), hora, 'priv', id_mensaje=mensaje.get('id'))
             if emisor != self.nickname:
                 self._acusar_recepcion(mensaje)
                 reproducir_beep()
@@ -1559,7 +1560,7 @@ class ChatFrame(ctk.CTkFrame):
         elif tipo == 'grupo_msg':
             emisor = mensaje.get('emisor')
             nombre_grupo = mensaje.get('grupo')
-            contenido = mensaje.get('contenido', '')
+            contenido = self._texto(mensaje)
             self._agregar_burbuja(
                 emisor, contenido, hora, 'grupo', grupo=nombre_grupo, id_mensaje=mensaje.get('id')
             )
@@ -1570,6 +1571,12 @@ class ChatFrame(ctk.CTkFrame):
 
         elif tipo == 'historial':
             self._agregar_burbuja('', mensaje['contenido'], '', 'historial')
+
+        elif tipo == 'historial_msg':
+            # Mensaje del historial de la sala: se descifra y se muestra como línea histórica.
+            emisor = mensaje.get('emisor', '')
+            texto = self._texto(mensaje)
+            self._agregar_burbuja('', f'{emisor}: {texto}', mensaje.get('hora', ''), 'historial')
 
         elif tipo == 'file':
             emisor = mensaje.get('emisor')
@@ -1606,7 +1613,7 @@ class ChatFrame(ctk.CTkFrame):
             self._registrar_reaccion(mensaje.get('id_mensaje'), mensaje.get('emisor'), mensaje.get('emoji'))
 
         elif tipo == 'msg_editado':
-            self._editar_mensaje_local(mensaje.get('id_mensaje'), mensaje.get('contenido', ''))
+            self._editar_mensaje_local(mensaje.get('id_mensaje'), self._texto(mensaje))
 
         elif tipo == 'msg_eliminado':
             self._eliminar_mensaje_local(mensaje.get('id_mensaje'))
@@ -1654,6 +1661,13 @@ class ChatFrame(ctk.CTkFrame):
                 pass
         else:
             self.pendientes_lectura.add(id_m)
+
+    def _texto(self, mensaje):
+        # Devuelve el contenido en claro (descifra si viene cifrado); nunca lanza al mostrar.
+        try:
+            return interpretar_contenido(mensaje)
+        except Exception as exc:
+            return f'[No se pudo descifrar: {exc}]'
 
     def _simbolo_estado(self, id_mensaje):
         # ✓ enviado · ✓✓ entregado · ✓✓ Leído (solo en las burbujas propias).
@@ -1969,15 +1983,24 @@ class ChatGUI:
     def _conectar(self, ip, puerto, nickname, avatar='circulo', color=None):
         try:
             self.sock = conectar(ip, puerto)
+            # enviar_nickname calcula la huella de la clave Fernet; puede fallar si falta cryptography/clave.
+            enviar_nickname(self.sock, nickname, avatar, color)
         except Exception as e:
             self.login_frame.mostrar_error(f'No se pudo conectar: {e}')
+            if self.sock:
+                self.sock.close()
+                self.sock = None
             return
 
-        enviar_nickname(self.sock, nickname, avatar, color)
         respuesta = recibir(self.sock)
 
-        if respuesta and respuesta.get('contenido') == 'NICK_INVALIDO':
-            self.login_frame.mostrar_error('Nickname ya en uso o inválido.')
+        rechazos = {
+            'NICK_INVALIDO': 'Nickname ya en uso o inválido.',
+            'CLAVE_REQUERIDA': 'El servidor exige cifrado: instalá cryptography y usá clave_chat.key.',
+            'CLAVE_INCOMPATIBLE': 'Tu clave no coincide con la de los demás. Usá el mismo cliente/clave_chat.key.',
+        }
+        if respuesta and respuesta.get('contenido') in rechazos:
+            self.login_frame.mostrar_error(rechazos[respuesta['contenido']])
             self.sock.close()
             self.sock = None
             return

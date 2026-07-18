@@ -14,7 +14,7 @@ from cliente.cliente_chat import (
     crear_grupo, invitar_a_grupo, enviar_mensaje_grupo, salir_grupo,
     es_mencionado, enviar_ping, solicitar_stats, solicitar_whois,
     editar_mensaje, eliminar_mensaje, confirmar_entrega, confirmar_lectura,
-    crear_sala, unirse_sala
+    crear_sala, unirse_sala, interpretar_contenido
 )
 
 
@@ -228,15 +228,24 @@ class ClienteConsola:
 
         try:
             self.sock = conectar(ip, puerto)
+            # enviar_nickname calcula la huella de la clave Fernet; puede fallar si falta cryptography/clave.
+            enviar_nickname(self.sock, nickname)
         except Exception as e:
             print(color(f'No se pudo conectar al servidor: {e}', Color.ROJO))
+            if self.sock:
+                self.sock.close()
+                self.sock = None
             return False
 
-        enviar_nickname(self.sock, nickname)
         respuesta = recibir(self.sock)
 
-        if respuesta and respuesta.get('contenido') == 'NICK_INVALIDO':
-            print(color('El nickname ya está en uso o es inválido.', Color.ROJO))
+        rechazos = {
+            'NICK_INVALIDO': 'El nickname ya está en uso o es inválido.',
+            'CLAVE_REQUERIDA': 'El servidor exige cifrado: falta la clave (instalá cryptography y usá clave_chat.key).',
+            'CLAVE_INCOMPATIBLE': 'Tu clave de cifrado no coincide con la de los demás. Usá el mismo archivo cliente/clave_chat.key.',
+        }
+        if respuesta and respuesta.get('contenido') in rechazos:
+            print(color(rechazos[respuesta['contenido']], Color.ROJO))
             self.sock.close()
             self.sock = None
             return False
@@ -291,6 +300,13 @@ class ClienteConsola:
                     self.conectado = False
                 break
 
+    def _texto_mensaje(self, mensaje):
+        # Devuelve el contenido en claro (descifra si viene cifrado); nunca lanza al mostrar.
+        try:
+            return interpretar_contenido(mensaje)
+        except Exception as exc:
+            return f'[No se pudo descifrar: {exc}]'
+
     def _manejar_mensaje(self, mensaje):
         tipo = mensaje.get('tipo')
         hora = mensaje.get('hora', '')
@@ -311,7 +327,7 @@ class ClienteConsola:
 
         if tipo == 'msg':
             emisor = mensaje.get('emisor')
-            contenido = mensaje.get('contenido')
+            contenido = self._texto_mensaje(mensaje)
             if emisor == self.nickname:
                 self.ultimo_mensaje_propio = {'id': mensaje.get('id')}
                 linea = color(f' {color("[Tú]", Color.BOLD + Color.BLANCO)} {hora}: {contenido} ', Color.FONDO_AZUL)
@@ -327,7 +343,7 @@ class ClienteConsola:
 
         elif tipo == 'priv':
             emisor = mensaje.get('emisor')
-            contenido = mensaje.get('contenido')
+            contenido = self._texto_mensaje(mensaje)
             if emisor == self.nickname:
                 self.ultimo_mensaje_propio = {'id': mensaje.get('id')}
                 destinatario = mensaje.get('destinatario')
@@ -376,7 +392,7 @@ class ClienteConsola:
         elif tipo == 'grupo_msg':
             emisor = mensaje.get('emisor')
             grupo = mensaje.get('grupo')
-            contenido = mensaje.get('contenido')
+            contenido = self._texto_mensaje(mensaje)
             if emisor == self.nickname:
                 self.ultimo_mensaje_propio = {'id': mensaje.get('id')}
                 linea = f'👥 {color(f"[{grupo}] Tú", Color.VERDE)} {color(hora, Color.GRIS)}: {contenido}'
@@ -400,6 +416,17 @@ class ClienteConsola:
                     print(_margen_centrado() + color('──── Historial anterior ────', Color.GRIS))
                 self.historial_mostrado = True
             linea = f'🕘 {color("[HISTORIAL]", Color.GRIS)} {mensaje.get("contenido")}'
+
+        elif tipo == 'historial_msg':
+            if not self.historial_mostrado:
+                with LOCK_IMPRESION:
+                    print()
+                    print(_margen_centrado() + color('──── Historial anterior ────', Color.GRIS))
+                self.historial_mostrado = True
+            emisor = mensaje.get('emisor', '')
+            hora = mensaje.get('hora', '')
+            texto = self._texto_mensaje(mensaje)
+            linea = f'🕘 {color("[HISTORIAL]", Color.GRIS)} [{hora}] {color(emisor, Color.GRIS)}: {texto}'
 
         elif tipo == 'file':
             emisor = mensaje.get('emisor')

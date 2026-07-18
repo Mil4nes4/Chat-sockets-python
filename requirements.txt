@@ -1,0 +1,15 @@
+# Dependencias del proyecto.
+# El SERVIDOR usa solo librería estándar (no necesita instalar nada).
+# Los CLIENTES necesitan:
+
+# Cifrado Fernet del contenido de los mensajes (obligatorio para conectar).
+cryptography
+
+# Cliente gráfico (gui.py).
+customtkinter
+
+# Opcional: miniaturas de imágenes en la GUI.
+Pillow
+
+# Opcional: arrastrar y soltar archivos en la GUI.
+tkinterdnd2
