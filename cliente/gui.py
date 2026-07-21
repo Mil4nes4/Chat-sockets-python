@@ -39,6 +39,23 @@ try:
 except ImportError:
     DND_DISPONIBLE = False
 
+# Cámara opcional: si falta opencv-python, el botón 📷 avisa en vez de romper la GUI.
+try:
+    import cv2
+    CV2_DISPONIBLE = True
+except ImportError:
+    CV2_DISPONIBLE = False
+
+# Micrófono opcional: si falta sounddevice, el botón 🎤 avisa en vez de romper la GUI.
+try:
+    import sounddevice as sd
+    import numpy as np
+    AUDIO_DISPONIBLE = True
+except ImportError:
+    AUDIO_DISPONIBLE = False
+
+import wave
+
 TEMA_OSCURO = {
     'nombre': 'oscuro',
     'fondo': '#313338',
@@ -285,6 +302,20 @@ def reproducir_beep(mencion=False):
 def es_imagen(nombre_archivo):
     extensiones = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
     return nombre_archivo.lower().endswith(extensiones)
+
+
+def es_audio(nombre_archivo):
+    extensiones = ('.wav',)
+    return nombre_archivo.lower().endswith(extensiones)
+
+
+def reproducir_audio(ruta):
+    try:
+        if sys.platform == 'win32':
+            import winsound
+            winsound.PlaySound(ruta, winsound.SND_FILENAME | winsound.SND_ASYNC)
+    except Exception:
+        pass
 
 
 def obtener_iniciales(nombre):
@@ -834,6 +865,28 @@ class ChatFrame(ctk.CTkFrame):
         )
         self.boton_emoji.pack(side=tk.LEFT, padx=5)
 
+        self.boton_camara = ctk.CTkButton(
+            self.frame_inferior, text='📷', command=self._tomar_foto,
+            fg_color=self.tema['entrada'], hover_color=self.tema['borde'],
+            text_color=self.tema['texto'], width=44, height=40,
+            corner_radius=10, font=('Segoe UI', 17)
+        )
+        self.boton_camara.pack(side=tk.LEFT, padx=5)
+
+        self.grabando_audio = False
+        self.boton_micro = ctk.CTkButton(
+            self.frame_inferior, text='🎤', command=self._alternar_grabacion,
+            fg_color=self.tema['entrada'], hover_color=self.tema['borde'],
+            text_color=self.tema['texto'], width=44, height=40,
+            corner_radius=10, font=('Segoe UI', 17)
+        )
+        self.boton_micro.pack(side=tk.LEFT, padx=5)
+
+        self.label_grabando = ctk.CTkLabel(
+            self.frame_inferior, text='', text_color='#e74c3c', font=('Segoe UI', 12, 'bold')
+        )
+        self.label_grabando.pack(side=tk.LEFT, padx=(0, 5))
+
         self.boton_enviar = ctk.CTkButton(
             self.frame_inferior, text='Enviar', command=self._enviar_mensaje,
             fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
@@ -925,6 +978,9 @@ class ChatFrame(ctk.CTkFrame):
         )
         self.boton_archivo.configure(fg_color=tema['entrada'], hover_color=tema['borde'], text_color=tema['texto'])
         self.boton_emoji.configure(fg_color=tema['entrada'], hover_color=tema['borde'], text_color=tema['texto'])
+        if not self.grabando_audio:
+            self.boton_camara.configure(fg_color=tema['entrada'], hover_color=tema['borde'], text_color=tema['texto'])
+            self.boton_micro.configure(fg_color=tema['entrada'], hover_color=tema['borde'], text_color=tema['texto'])
         self.boton_enviar.configure(fg_color=tema['acento'], hover_color=tema['acento_hover'])
 
         self._configurar_tags()
@@ -1500,6 +1556,25 @@ class ChatFrame(ctk.CTkFrame):
         except Exception:
             return False
 
+    def _mostrar_reproductor_audio(self, ruta, emisor):
+        try:
+            pegado_abajo = self._esta_al_final()
+            self.area_chat.configure(state=tk.NORMAL)
+            self.area_chat.insert(tk.END, f'[Nota de voz de {emisor}] ', 'hora')
+            boton = ctk.CTkButton(
+                self.area_chat._textbox, text='▶ Reproducir', width=110, height=24,
+                fg_color=self.tema['acento'], hover_color=self.tema['acento_hover'],
+                command=lambda: reproducir_audio(ruta)
+            )
+            self.area_chat._textbox.window_create(tk.END, window=boton)
+            self.area_chat.insert(tk.END, '\n\n')
+            if pegado_abajo:
+                self.area_chat.see(tk.END)
+            self.area_chat.configure(state=tk.DISABLED)
+            return True
+        except Exception:
+            return False
+
     def _manejar_mensaje(self, mensaje):
         tipo = mensaje.get('tipo')
         hora = mensaje.get('hora', '')
@@ -1593,6 +1668,8 @@ class ChatFrame(ctk.CTkFrame):
                 reproducir_beep()
             if es_imagen(nombre):
                 self._mostrar_preview_imagen(ruta, emisor)
+            elif es_audio(nombre):
+                self._mostrar_reproductor_audio(ruta, emisor)
             self._agregar_burbuja(emisor, f'Archivo: {nombre}', hora, 'archivo', extra=extra, id_mensaje=mensaje.get('id'))
 
         elif tipo == 'salas':
@@ -1913,6 +1990,160 @@ class ChatFrame(ctk.CTkFrame):
         rutas = self.tk.splitlist(event.data)
         for ruta in rutas:
             self._enviar_archivo_ruta(ruta)
+
+    def _tomar_foto(self):
+        if not self.conectado:
+            return
+        if not CV2_DISPONIBLE:
+            messagebox.showerror(
+                'Cámara',
+                'Falta instalar opencv-python para usar la cámara (pip install opencv-python).'
+            )
+            return
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            cap.release()
+            messagebox.showerror('Cámara', 'No se encontró ninguna cámara disponible.')
+            return
+
+        ventana = ctk.CTkToplevel(self.root)
+        ventana.title('Tomar foto')
+        ventana.resizable(False, False)
+        label_video = ctk.CTkLabel(ventana, text='')
+        label_video.pack(padx=10, pady=10)
+        frame_botones = ctk.CTkFrame(ventana, fg_color='transparent')
+        frame_botones.pack(pady=(0, 10))
+
+        estado = {'capturado': None, 'activo': True}
+
+        def cerrar_camara():
+            estado['activo'] = False
+            cap.release()
+            ventana.destroy()
+
+        def mostrar(frame):
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(rgb).resize((480, 360))
+            foto = ImageTk.PhotoImage(img)
+            label_video.configure(image=foto, text='')
+            label_video.imagen_actual = foto  # evita que el garbage collector la borre
+
+        def actualizar_frame():
+            if not estado['activo']:
+                return
+            if estado['capturado'] is None:
+                ok, frame = cap.read()
+                if ok:
+                    mostrar(frame)
+                ventana.after(30, actualizar_frame)
+
+        def capturar():
+            ok, frame = cap.read()
+            if not ok:
+                return
+            estado['capturado'] = frame
+            mostrar(frame)
+            boton_capturar.pack_forget()
+            boton_repetir.pack(side=tk.LEFT, padx=5)
+            boton_enviar.pack(side=tk.LEFT, padx=5)
+
+        def repetir():
+            estado['capturado'] = None
+            boton_enviar.pack_forget()
+            boton_repetir.pack_forget()
+            boton_capturar.pack(side=tk.LEFT, padx=5)
+            actualizar_frame()
+
+        def enviar():
+            frame = estado['capturado']
+            if frame is None:
+                return
+            os.makedirs('capturas_camara', exist_ok=True)
+            nombre = f"foto_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
+            ruta = os.path.join('capturas_camara', nombre)
+            cv2.imwrite(ruta, frame)
+            cerrar_camara()
+            self._enviar_archivo_ruta(ruta)
+
+        boton_capturar = ctk.CTkButton(frame_botones, text='📷 Capturar', command=capturar)
+        boton_capturar.pack(side=tk.LEFT, padx=5)
+        boton_repetir = ctk.CTkButton(frame_botones, text='Repetir', command=repetir)
+        boton_enviar = ctk.CTkButton(
+            frame_botones, text='Enviar', command=enviar, fg_color=self.tema['acento']
+        )
+        boton_cancelar = ctk.CTkButton(
+            frame_botones, text='Cancelar', command=cerrar_camara, fg_color='#e74c3c', hover_color='#c0392b'
+        )
+        boton_cancelar.pack(side=tk.LEFT, padx=5)
+
+        ventana.protocol('WM_DELETE_WINDOW', cerrar_camara)
+        actualizar_frame()
+
+    def _alternar_grabacion(self):
+        if not self.conectado:
+            return
+        if not AUDIO_DISPONIBLE:
+            messagebox.showerror(
+                'Nota de voz',
+                'Falta instalar sounddevice para grabar audio (pip install sounddevice).'
+            )
+            return
+        if self.grabando_audio:
+            self._detener_grabacion()
+        else:
+            self._iniciar_grabacion()
+
+    def _iniciar_grabacion(self):
+        self._bloques_audio = []
+
+        def callback(indata, frames, tiempo, status):
+            self._bloques_audio.append(indata.copy())
+
+        try:
+            self._stream_audio = sd.InputStream(
+                samplerate=44100, channels=1, dtype='int16', callback=callback
+            )
+            self._stream_audio.start()
+        except Exception as e:
+            messagebox.showerror('Nota de voz', f'No se pudo acceder al micrófono: {e}')
+            return
+
+        self.grabando_audio = True
+        self._inicio_grabacion = time.time()
+        self.boton_micro.configure(text='⏹', fg_color='#e74c3c', hover_color='#c0392b')
+        self._actualizar_tiempo_grabacion()
+
+    def _actualizar_tiempo_grabacion(self):
+        if not self.grabando_audio:
+            return
+        segundos = int(time.time() - self._inicio_grabacion)
+        self.label_grabando.configure(text=f'🔴 {segundos // 60}:{segundos % 60:02d}')
+        self.root.after(500, self._actualizar_tiempo_grabacion)
+
+    def _detener_grabacion(self):
+        self.grabando_audio = False
+        self._stream_audio.stop()
+        self._stream_audio.close()
+        self.boton_micro.configure(
+            text='🎤', fg_color=self.tema['entrada'], hover_color=self.tema['borde']
+        )
+        self.label_grabando.configure(text='')
+
+        duracion = time.time() - self._inicio_grabacion
+        if duracion < 0.5 or not self._bloques_audio:
+            return  # grabación demasiado corta/accidental: se descarta en vez de mandar un audio vacío
+
+        datos = np.concatenate(self._bloques_audio, axis=0)
+        os.makedirs('notas_voz', exist_ok=True)
+        nombre = f"nota_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+        ruta = os.path.join('notas_voz', nombre)
+        with wave.open(ruta, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # int16 = 2 bytes
+            wf.setframerate(44100)
+            wf.writeframes(datos.tobytes())
+
+        self._enviar_archivo_ruta(ruta)
 
     def _procesar_cola(self):
         while not self.cola_mensajes.empty():

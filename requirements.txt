@@ -13,3 +13,9 @@ Pillow
 
 # Opcional: arrastrar y soltar archivos en la GUI.
 tkinterdnd2
+
+# Opcional: tomar fotos con la cámara desde la GUI (botón 📷).
+opencv-python
+
+# Opcional: grabar notas de voz con el micrófono desde la GUI (botón 🎤).
+sounddevice
